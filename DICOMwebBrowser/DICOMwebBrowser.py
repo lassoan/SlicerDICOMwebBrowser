@@ -1,0 +1,1078 @@
+from __future__ import division
+
+import json
+import logging
+import os
+import os.path
+import pydicom
+import string
+import sys
+import time
+import unittest
+
+from __main__ import vtk, qt, ctk, slicer
+
+from slicer.ScriptedLoadableModule import *
+
+#
+# DICOMwebBrowser
+#
+
+class DICOMwebBrowser(ScriptedLoadableModule):
+  def __init__(self, parent):
+    ScriptedLoadableModule.__init__(self, parent)
+    self.parent.title = "DICOMweb Browser"
+    self.parent.categories = ["Informatics"]
+    self.parent.dependencies = ["DICOM"]
+    self.parent.contributors = ["Andras Lasso (PerkLab, Queen's)",
+      "Alireza Mehrtash (Brigham and Women's Hospital)", 
+      "Andrey Fedorov (Brigham and Women's Hospital)"]
+    self.parent.helpText = """Browse and retrieve DICOM data sets from DICOMweb server."""
+    self.parent.acknowledgementText = """<img src=':Logos/QIICR.png'><br><br>
+    Supported by NIH U24 CA180918 (PIs Kikinis and Fedorov).
+    """
+
+#
+# qDICOMwebBrowserWidget
+#
+
+class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
+  def __init__(self, parent=None):
+    ScriptedLoadableModuleWidget.__init__(self, parent)
+
+    self.DICOMwebClient = None
+
+    self.browserWidget = qt.QWidget()
+    self.browserWidget.setWindowTitle('DICOMweb Browser')
+
+    self.seriesTableRowCount = 0
+    self.selectedSeriesNicknamesDic = {}
+    self.downloadQueue = []
+    self.cancelDownloadRequested = False
+
+    self.imagesToDownloadCount = 0
+
+    databaseDirectory = slicer.dicomDatabase.databaseDirectory
+    self.storagePath = databaseDirectory + "/DICOMwebLocal/"
+    if not os.path.exists(self.storagePath):
+      os.makedirs(self.storagePath)
+
+    self.cachePath = self.storagePath + "/ServerResponseCache/"
+
+    if not os.path.exists(self.cachePath):
+      os.makedirs(self.cachePath)
+    self.useCacheFlag = True
+
+  def enter(self):
+    self.showBrowser()
+
+  def setup(self):
+    ScriptedLoadableModuleWidget.setup(self)
+
+    try:
+      import dicomweb_client
+    except ModuleNotFoundError:
+      pip_install('dicomweb-client')
+      import dicomweb_client
+
+    # Instantiate and connect widgets ...
+    downloadAndIndexIcon = qt.QIcon(self.resourcePath('Icons/downloadAndIndex.png'))
+    downloadAndLoadIcon = qt.QIcon(self.resourcePath('Icons/downloadAndLoad.png'))
+    browserIcon = qt.QIcon(self.resourcePath('Icons/DICOMwebBrowser.png'))
+    cancelIcon = qt.QIcon(self.resourcePath('Icons/cancel.png'))
+    self.downloadIcon = qt.QIcon(self.resourcePath('Icons/download.png'))
+    self.storedlIcon = qt.QIcon(self.resourcePath('Icons/stored.png'))
+    self.browserWidget.setWindowIcon(browserIcon)
+
+    #
+    # Browser Area
+    #
+    browserCollapsibleButton = ctk.ctkCollapsibleButton()
+    browserCollapsibleButton.text = "DICOMweb Browser"
+    self.layout.addWidget(browserCollapsibleButton)
+    browserLayout = qt.QVBoxLayout(browserCollapsibleButton)
+
+    self.popupGeometry = qt.QRect()
+    settings = qt.QSettings()
+    mainWindow = slicer.util.mainWindow()
+    if mainWindow:
+      width = mainWindow.width * 0.75
+      height = mainWindow.height * 0.75
+      self.popupGeometry.setWidth(width)
+      self.popupGeometry.setHeight(height)
+      self.popupPositioned = False
+      self.browserWidget.setGeometry(self.popupGeometry)
+
+    #
+    # Show Browser Button
+    #
+    self.showBrowserButton = qt.QPushButton("Show Browser")
+    browserLayout.addWidget(self.showBrowserButton)
+
+    # Browser Widget Layout within the collapsible button
+    browserWidgetLayout = qt.QVBoxLayout(self.browserWidget)
+
+    self.serverCollapsibleGroupBox = ctk.ctkCollapsibleGroupBox()
+    self.serverCollapsibleGroupBox.setTitle('Server')
+    browserWidgetLayout.addWidget(self.serverCollapsibleGroupBox)  #
+    serverFormLayout = qt.QHBoxLayout(self.serverCollapsibleGroupBox)
+
+    #
+    # Collection Selector ComboBox
+    #
+    self.serverUrlLabel = qt.QLabel('Server URL:')
+    serverFormLayout.addWidget(self.serverUrlLabel)
+    # Server address selector
+    self.serverUrlLineEdit = qt.QLineEdit()
+    self.serverUrlLineEdit.text = qt.QSettings().value('DICOMwebBrowser/ServerURL', '')
+    self.serverUrlLineEdit.setMinimumWidth(200)
+    serverFormLayout.addWidget(self.serverUrlLineEdit)
+
+    self.connectToServerButton = qt.QPushButton()
+    self.connectToServerButton.text = "Connect"
+    serverFormLayout.addWidget(self.connectToServerButton)
+
+    #
+    # Use Cache CheckBox
+    #
+    self.useCacheCeckBox = qt.QCheckBox("Cache server responses")
+    self.useCacheCeckBox.toolTip = '''For faster browsing if this box is checked\
+    the browser will cache server responses and on further calls\
+    would populate tables based on saved data on disk.'''
+
+    serverFormLayout.addWidget(self.useCacheCeckBox)
+    self.useCacheCeckBox.setCheckState(True)
+    self.useCacheCeckBox.setTristate(False)
+    serverFormLayout.addStretch(4)
+    #logoLabelText = "<img src='" + self.resourcePath('Icons/DICOMwebBrowser.png') + "'>"
+    #self.logoLabel = qt.QLabel(logoLabelText)
+    #serverFormLayout.addWidget(self.logoLabel)
+
+    #
+    # Studies Table Widget
+    #
+    self.studiesCollapsibleGroupBox = ctk.ctkCollapsibleGroupBox()
+    self.studiesCollapsibleGroupBox.setTitle('Studies')
+    browserWidgetLayout.addWidget(self.studiesCollapsibleGroupBox)
+    studiesVBoxLayout1 = qt.QVBoxLayout(self.studiesCollapsibleGroupBox)
+    studiesExpdableArea = ctk.ctkExpandableWidget()
+    studiesVBoxLayout1.addWidget(studiesExpdableArea)
+    studiesVBoxLayout2 = qt.QVBoxLayout(studiesExpdableArea)
+    self.studiesTableWidget = qt.QTableWidget()
+    self.studiesTableWidget.setCornerButtonEnabled(True)
+    self.studiesModel = qt.QStandardItemModel()
+    self.studiesTableHeaderLabels = ['Study instance UID', 'Patient name', 'Patient ID', 'Modality', 'Study date', 'Study description']
+    self.studiesTableWidget.setColumnCount(len(self.studiesTableHeaderLabels))
+    self.studiesTableWidget.sortingEnabled = True
+    self.studiesTableWidget.hideColumn(0)
+    self.studiesTableWidget.setHorizontalHeaderLabels(self.studiesTableHeaderLabels)
+    studiesVBoxLayout2.addWidget(self.studiesTableWidget)
+    self.studiesTreeSelectionModel = self.studiesTableWidget.selectionModel()
+    self.studiesTableWidget.setSelectionBehavior(qt.QAbstractItemView.SelectRows)
+    studiesVerticalheader = self.studiesTableWidget.verticalHeader()
+    studiesVerticalheader.setDefaultSectionSize(20)
+    self.studiesTableWidgetHeader = self.studiesTableWidget.horizontalHeader()
+    self.studiesTableWidget.resizeColumnsToContents()
+    self.studiesTableWidgetHeader.setStretchLastSection(True)
+
+    studiesSelectOptionsWidget = qt.QWidget()
+    studiesSelectOptionsLayout = qt.QHBoxLayout(studiesSelectOptionsWidget)
+    studiesSelectOptionsLayout.setMargin(0)
+    studiesVBoxLayout2.addWidget(studiesSelectOptionsWidget)
+    studiesSelectLabel = qt.QLabel('Select:')
+    studiesSelectOptionsLayout.addWidget(studiesSelectLabel)
+    self.studiesSelectAllButton = qt.QPushButton('All')
+    self.studiesSelectAllButton.enabled = False
+    self.studiesSelectAllButton.setMaximumWidth(50)
+    studiesSelectOptionsLayout.addWidget(self.studiesSelectAllButton)
+    self.studiesSelectNoneButton = qt.QPushButton('None')
+    self.studiesSelectNoneButton.enabled = False
+    self.studiesSelectNoneButton.setMaximumWidth(50)
+    studiesSelectOptionsLayout.addWidget(self.studiesSelectNoneButton)
+    studiesSelectOptionsLayout.addStretch(1)
+    studiesVBoxLayout1.setSpacing(0)
+    studiesVBoxLayout2.setSpacing(0)
+    studiesVBoxLayout1.setMargin(0)
+    studiesVBoxLayout2.setContentsMargins(7, 3, 7, 7)
+
+    #
+    # Series Table Widget
+    #
+    self.seriesCollapsibleGroupBox = ctk.ctkCollapsibleGroupBox()
+    self.seriesCollapsibleGroupBox.setTitle('Series')
+    browserWidgetLayout.addWidget(self.seriesCollapsibleGroupBox)
+    seriesVBoxLayout1 = qt.QVBoxLayout(self.seriesCollapsibleGroupBox)
+    seriesExpdableArea = ctk.ctkExpandableWidget()
+    seriesVBoxLayout1.addWidget(seriesExpdableArea)
+    seriesVBoxLayout2 = qt.QVBoxLayout(seriesExpdableArea)
+    self.seriesTableWidget = qt.QTableWidget()
+    # self.seriesModel = qt.QStandardItemModel()
+    self.seriesTableHeaderLabels = ['Series Instance UID', 'Status', 'Series number', 'Modality',
+                                    'Image count', 'Series description']
+    self.seriesTableWidget.setColumnCount(len(self.seriesTableHeaderLabels))
+    self.seriesTableWidget.sortingEnabled = True
+    self.seriesTableWidget.hideColumn(0)
+    self.seriesTableWidget.setHorizontalHeaderLabels(self.seriesTableHeaderLabels)
+    self.seriesTableWidget.resizeColumnsToContents()
+    seriesVBoxLayout2.addWidget(self.seriesTableWidget)
+    self.seriesTreeSelectionModel = self.studiesTableWidget.selectionModel()
+    self.seriesTableWidget.setSelectionBehavior(qt.QAbstractItemView.SelectRows)
+    self.seriesTableWidget.setSelectionMode(3)
+    self.seriesTableWidgetHeader = self.seriesTableWidget.horizontalHeader()
+
+    self.seriesTableWidget.resizeColumnsToContents()
+    self.seriesTableWidgetHeader.setStretchLastSection(True)
+    seriesVerticalheader = self.seriesTableWidget.verticalHeader()
+    seriesVerticalheader.setDefaultSectionSize(20)
+
+    seriesSelectOptionsWidget = qt.QWidget()
+    seriesSelectOptionsLayout = qt.QHBoxLayout(seriesSelectOptionsWidget)
+    seriesVBoxLayout2.addWidget(seriesSelectOptionsWidget)
+    seriesSelectOptionsLayout.setMargin(0)
+    seriesSelectLabel = qt.QLabel('Select:')
+    seriesSelectOptionsLayout.addWidget(seriesSelectLabel)
+    self.seriesSelectAllButton = qt.QPushButton('All')
+    self.seriesSelectAllButton.enabled = False
+    self.seriesSelectAllButton.setMaximumWidth(50)
+    seriesSelectOptionsLayout.addWidget(self.seriesSelectAllButton)
+    self.seriesSelectNoneButton = qt.QPushButton('None')
+    self.seriesSelectNoneButton.enabled = False
+    self.seriesSelectNoneButton.setMaximumWidth(50)
+    seriesSelectOptionsLayout.addWidget(self.seriesSelectNoneButton)
+    seriesVBoxLayout1.setSpacing(0)
+    seriesVBoxLayout2.setSpacing(0)
+    seriesVBoxLayout1.setMargin(0)
+    seriesVBoxLayout2.setContentsMargins(7, 3, 7, 7)
+
+    seriesSelectOptionsLayout.addStretch(1)
+    self.imagesCountLabel = qt.QLabel()
+    self.imagesCountLabel.text = 'No. of images to download: <span style=" font-size:8pt; font-weight:600; color:#aa0000;">0</span>'
+    seriesSelectOptionsLayout.addWidget(self.imagesCountLabel)
+    # seriesSelectOptionsLayout.setAlignment(qt.Qt.AlignTop)
+
+    # Index Button
+    #
+    self.indexButton = qt.QPushButton()
+    self.indexButton.setMinimumWidth(50)
+    self.indexButton.toolTip = "Download and Index: The browser will download the selected sereies and index them in the local DICOM Database."
+    self.indexButton.setIcon(downloadAndIndexIcon)
+    iconSize = qt.QSize(70, 40)
+    self.indexButton.setIconSize(iconSize)
+    # self.indexButton.setMinimumHeight(50)
+    self.indexButton.enabled = False
+    # downloadWidgetLayout.addStretch(4)
+    seriesSelectOptionsLayout.addWidget(self.indexButton)
+
+    # downloadWidgetLayout.addStretch(1)
+    #
+    # Load Button
+    #
+    self.loadButton = qt.QPushButton("")
+    self.loadButton.setMinimumWidth(50)
+    self.loadButton.setIcon(downloadAndLoadIcon)
+    self.loadButton.setIconSize(iconSize)
+    # self.loadButton.setMinimumHeight(50)
+    self.loadButton.toolTip = "Download and Load: The browser will download the selected sereies and Load them into the scene."
+    self.loadButton.enabled = False
+    seriesSelectOptionsLayout.addWidget(self.loadButton)
+    # downloadWidgetLayout.addStretch(4)
+
+    self.cancelDownloadButton = qt.QPushButton('')
+    seriesSelectOptionsLayout.addWidget(self.cancelDownloadButton)
+    self.cancelDownloadButton.setIconSize(iconSize)
+    self.cancelDownloadButton.toolTip = "Cancel all downloads."
+    self.cancelDownloadButton.setIcon(cancelIcon)
+    self.cancelDownloadButton.enabled = False
+
+    self.statusFrame = qt.QFrame()
+    browserWidgetLayout.addWidget(self.statusFrame)
+    statusHBoxLayout = qt.QHBoxLayout(self.statusFrame)
+    statusHBoxLayout.setMargin(0)
+    statusHBoxLayout.setSpacing(0)
+    self.statusLabel = qt.QLabel('')
+    statusHBoxLayout.addWidget(self.statusLabel)
+    statusHBoxLayout.addStretch(1)
+
+    #
+    # delete data context menu
+    #
+    self.seriesTableWidget.setContextMenuPolicy(2)
+    self.removeSeriesAction = qt.QAction("Remove from disk", self.seriesTableWidget)
+    self.seriesTableWidget.addAction(self.removeSeriesAction)
+    # self.removeSeriesAction.enabled = False
+
+    #
+    # Settings Area
+    #
+    settingsCollapsibleButton = ctk.ctkCollapsibleButton()
+    settingsCollapsibleButton.text = "Settings"
+    self.layout.addWidget(settingsCollapsibleButton)
+    settingsGridLayout = qt.QGridLayout(settingsCollapsibleButton)
+    settingsCollapsibleButton.collapsed = True
+
+    # Storage Path button
+    #
+    # storageWidget = qt.QWidget()
+    # storageFormLayout = qt.QFormLayout(storageWidget)
+    # settingsVBoxLayout.addWidget(storageWidget)
+
+    storagePathLabel = qt.QLabel("Storage Folder: ")
+    self.storagePathButton = ctk.ctkDirectoryButton()
+    self.storagePathButton.directory = self.storagePath
+    settingsGridLayout.addWidget(storagePathLabel, 0, 0, 1, 1)
+    settingsGridLayout.addWidget(self.storagePathButton, 0, 1, 1, 4)
+
+    #
+    # Connection Area
+    #
+    # Add remove button
+    customAPILabel = qt.QLabel("Custom API Key: ")
+
+    addRemoveApisButton = qt.QPushButton("+")
+    addRemoveApisButton.toolTip = "Add or Remove APIs"
+    addRemoveApisButton.enabled = True
+    addRemoveApisButton.setMaximumWidth(20)
+
+    # connections
+    self.showBrowserButton.connect('clicked(bool)', self.onShowBrowserButton)
+    self.connectToServerButton.connect('clicked()', self.connectToServer)
+    self.studiesTableWidget.connect('itemSelectionChanged()', self.studiesTableSelectionChanged)
+    self.seriesTableWidget.connect('itemSelectionChanged()', self.seriesSelected)
+    self.useCacheCeckBox.connect('stateChanged(int)', self.onUseCacheStateChanged)
+    self.indexButton.connect('clicked(bool)', self.onIndexButton)
+    self.loadButton.connect('clicked(bool)', self.onLoadButton)
+    self.cancelDownloadButton.connect('clicked(bool)', self.onCancelDownloadButton)
+    self.storagePathButton.connect('directoryChanged(const QString &)', self.onStoragePathButton)
+    self.removeSeriesAction.connect('triggered()', self.onRemoveSeriesContextMenuTriggered)
+    self.seriesSelectAllButton.connect('clicked(bool)', self.onSeriesSelectAllButton)
+    self.seriesSelectNoneButton.connect('clicked(bool)', self.onSeriesSelectNoneButton)
+    self.studiesSelectAllButton.connect('clicked(bool)', self.onStudiesSelectAllButton)
+    self.studiesSelectNoneButton.connect('clicked(bool)', self.onStudiesSelectNoneButton)
+
+    # Add vertical spacer
+    self.layout.addStretch(1)
+    
+    #self.connectToServer()
+
+
+  def cleanup(self):
+    pass
+
+  def onShowBrowserButton(self):
+    self.showBrowser()
+
+  def onUseCacheStateChanged(self, state):
+    if state == 0:
+      self.useCacheFlag = False
+    elif state == 2:
+      self.useCacheFlag = True
+
+  def onRemoveSeriesContextMenuTriggered(self):
+    removeList = []
+    for uid in self.seriesInstanceUIDWidgets:
+      if uid.isSelected():
+        seriesInstanceUID = uid.text()
+        slicer.dicomDatabase.removeSeries(seriesInstanceUID)
+    self.studiesTableSelectionChanged()
+
+  def showBrowser(self):
+    if not self.browserWidget.isVisible():
+      self.popupPositioned = False
+      self.browserWidget.show()
+      if self.popupGeometry.isValid():
+        self.browserWidget.setGeometry(self.popupGeometry)
+    self.browserWidget.raise_()
+
+    if not self.popupPositioned:
+      mainWindow = slicer.util.mainWindow()
+      screenMainPos = mainWindow.pos
+      x = screenMainPos.x() + 100
+      y = screenMainPos.y() + 100
+      self.browserWidget.move(qt.QPoint(x, y))
+      self.popupPositioned = True
+
+  def showStatus(self, message, waitMessage='Waiting for DICOMweb server .... '):
+    self.statusLabel.text = waitMessage + message
+    self.statusLabel.setStyleSheet("QLabel { background-color : #F0F0F0 ; color : #383838; }")
+    slicer.app.processEvents()
+
+  def clearStatus(self):
+    self.statusLabel.text = ''
+    self.statusLabel.setStyleSheet("QLabel { background-color : white; color : black; }")
+
+  def onStoragePathButton(self):
+    self.storagePath = self.storagePathButton.directory
+
+  def onStudiesSelectAllButton(self):
+    self.studiesTableWidget.selectAll()
+
+  def onStudiesSelectNoneButton(self):
+    self.studiesTableWidget.clearSelection()
+
+  def onSeriesSelectAllButton(self):
+    self.seriesTableWidget.selectAll()
+
+  def onSeriesSelectNoneButton(self):
+    self.seriesTableWidget.clearSelection()
+
+  def connectToServer(self):
+    # Save current server URL to application settings
+    qt.QSettings().setValue('DICOMwebBrowser/ServerURL', self.serverUrlLineEdit.text)
+
+    self.loadButton.enabled = False
+    self.indexButton.enabled = False
+    self.clearStudiesTableWidget()
+    self.clearSeriesTableWidget()
+    self.serverUrl = self.serverUrlLineEdit.text
+    import hashlib
+    cacheFile = self.cachePath + hashlib.md5(self.serverUrl.encode()).hexdigest() + '.json'
+    self.progressMessage = "Getting available studies for server: " + self.serverUrl
+    self.showStatus(self.progressMessage)
+
+    from dicomweb_client.api import DICOMwebClient
+    self.DICOMwebClient = DICOMwebClient(url=self.serverUrl)
+
+    studiesList = None
+    if os.path.isfile(cacheFile) and self.useCacheFlag:
+      with open(cacheFile, 'r') as openfile:
+        studiesList = json.load(openfile)
+      if not len(studiesList):
+        studiesList = None
+
+    if studiesList:
+      self.populateStudiesTableWidget(studiesList)
+      self.clearStatus()
+      groupBoxTitle = 'Studies (Accessed: ' + time.ctime(os.path.getmtime(cacheFile)) + ')'
+      self.studiesCollapsibleGroupBox.setTitle(groupBoxTitle)
+
+    else:
+      try:
+        # Get all studies
+        studies = []
+        offset = 0
+        
+        while True:
+            subset = self.DICOMwebClient.search_for_studies(offset=offset)
+            if len(subset) == 0:
+                break
+            if subset[0] in studies:
+                # got the same study twice, so probably this server does not respect offset,
+                # therefore we cannot do paging
+                break
+            studies.extend(subset)
+            offset += len(subset)
+
+        # Save to cache
+        with open(cacheFile, 'w') as f:
+          json.dump(studies, f)
+
+        self.populateStudiesTableWidget(studies)
+        groupBoxTitle = 'Studies (Accessed: ' + time.ctime(os.path.getmtime(cacheFile)) + ')'
+        self.studiesCollapsibleGroupBox.setTitle(groupBoxTitle)
+        self.clearStatus()
+
+      except Exception as error:
+        self.clearStatus()
+        message = "connectToServer: Error in getting response from DICOMweb server.\nError:\n" + str(error)
+        qt.QMessageBox.critical(slicer.util.mainWindow(),
+                    'DICOMweb Browser', message, qt.QMessageBox.Ok)
+
+    self.clearSeriesTableWidget()
+    self.numberOfSelectedStudies = 0
+    for widgetIndex in range(len(self.studyInstanceUIDWidgets)):
+      if self.studyInstanceUIDWidgets[widgetIndex].isSelected():
+        self.numberOfSelectedStudies += 1
+        self.studySelected(widgetIndex)
+
+  def studySelected(self, row):
+    self.loadButton.enabled = False
+    self.indexButton.enabled = False
+    self.selectedStudyInstanceUID = self.studyInstanceUIDWidgets[row].text()
+    self.selectedStudyRow = row
+    cacheFile = self.cachePath + self.selectedStudyInstanceUID + '.json'
+    self.progressMessage = "Getting available series for studyInstanceUID: " + self.selectedStudyInstanceUID
+    self.showStatus(self.progressMessage)
+    if os.path.isfile(cacheFile) and self.useCacheFlag:
+      with open(cacheFile, 'r') as openfile:
+        series = json.load(openfile)
+      self.populateSeriesTableWidget(series)
+      self.clearStatus()
+      if self.numberOfSelectedStudies == 1:
+        groupBoxTitle = 'Series (Accessed: ' + time.ctime(os.path.getmtime(cacheFile)) + ')'
+      else:
+        groupBoxTitle = 'Series '
+
+      self.seriesCollapsibleGroupBox.setTitle(groupBoxTitle)
+
+    else:
+      try:
+        series = self.DICOMwebClient.search_for_series(self.selectedStudyInstanceUID)
+        # Save to cache
+        with open(cacheFile, 'w') as f:
+          json.dump(series, f)
+        self.populateSeriesTableWidget(series)
+        if self.numberOfSelectedStudies == 1:
+          groupBoxTitle = 'Series (Accessed: ' + time.ctime(os.path.getmtime(cacheFile)) + ')'
+        else:
+          groupBoxTitle = 'Series '
+
+        self.seriesCollapsibleGroupBox.setTitle(groupBoxTitle)
+        self.clearStatus()
+
+      except Exception as error:
+        self.clearStatus()
+        message = "studySelected: Error in getting response from DICOMweb server.\nError:\n" + str(error)
+        qt.QMessageBox.critical(slicer.util.mainWindow(),
+                    'DICOMweb Browser', message, qt.QMessageBox.Ok)
+
+    self.onSeriesSelectAllButton()
+    # self.loadButton.enabled = True
+    # self.indexButton.enabled = True
+
+
+  def studiesTableSelectionChanged(self):
+    self.clearSeriesTableWidget()
+    self.seriesTableRowCount = 0
+    self.numberOfSelectedStudies = 0
+    for widgetIndex in range(len(self.studyInstanceUIDWidgets)):
+      if self.studyInstanceUIDWidgets[widgetIndex].isSelected():
+        self.numberOfSelectedStudies += 1
+        self.studySelected(widgetIndex)
+
+  def seriesSelected(self):
+    self.imagesToDownloadCount = 0
+    self.loadButton.enabled = False
+    self.indexButton.enabled = False
+    for widgetIndex in range(len(self.seriesInstanceUIDWidgets)):
+      if self.seriesInstanceUIDWidgets[widgetIndex].isSelected():
+        #self.imagesToDownloadCount += int(self.imageCounts[widgetIndex].text())
+        self.imagesToDownloadCount += 1 # TODO: check if image count can be quickly retrieved
+        self.loadButton.enabled = True
+        self.indexButton.enabled = True
+    self.imagesCountLabel.text = 'No. of images to download: ' + '<span style=" font-size:8pt; font-weight:600; color:#aa0000;">' + str(
+      self.imagesToDownloadCount) + '</span>' + ' '
+
+  def onIndexButton(self):
+    self.addSelectedToDownloadQueue(loadToScene=False)
+
+  def onLoadButton(self):
+    self.addSelectedToDownloadQueue(loadToScene=True)
+
+  def onCancelDownloadButton(self):
+    self.cancelDownloadRequested = True
+
+  def addSelectedToDownloadQueue(self, loadToScene):
+    self.cancelDownloadRequested = False
+    allSelectedSeriesUIDs = []
+
+    import hashlib
+    for widgetIndex in range(len(self.seriesInstanceUIDWidgets)):
+      # print self.seriesInstanceUIDWidgets[widgetIndex]
+      if not self.seriesInstanceUIDWidgets[widgetIndex].isSelected():
+        continue
+      selectedCollection = self.serverUrl
+      selectedPatient = ""  # TODO
+      selectedStudy = self.selectedStudyInstanceUID
+      selectedSeriesInstanceUID = self.seriesInstanceUIDWidgets[widgetIndex].text()
+      allSelectedSeriesUIDs.append(selectedSeriesInstanceUID)
+      self.selectedSeriesNicknamesDic[selectedSeriesInstanceUID] = "{0} - {1} - {2}".format(selectedPatient, self.selectedStudyRow + 1, widgetIndex + 1)
+
+      # create download queue
+      downloadProgressBar = qt.QProgressBar()
+      self.seriesTableWidget.setCellWidget(widgetIndex, self.seriesTableHeaderLabels.index('Status'), downloadProgressBar)
+      # Download folder name is set from series instance 
+      downloadFolderPath = os.path.join(self.storagePath, hashlib.md5(selectedSeriesInstanceUID.encode()).hexdigest()) + os.sep
+      self.downloadQueue.append({'studyInstanceUID': selectedStudy, 'seriesInstanceUID': selectedSeriesInstanceUID,
+                                  'downloadFolderPath': downloadFolderPath, 'downloadProgressBar': downloadProgressBar})
+
+    self.seriesTableWidget.clearSelection()
+    self.studiesTableWidget.enabled = False
+    self.serverUrlLineEdit.enabled = False
+
+    # Download data sets
+    selectedSeriesUIDs = self.downloadSelectedSeries()
+
+    # Load data sets into the scene
+    if loadToScene:
+      for seriesIndex, seriesUID in enumerate(allSelectedSeriesUIDs):
+        if self.cancelDownloadRequested:
+          break
+        # Print progress message
+        self.progressMessage = "Loading data into the scene {0}/{1}: {2}".format(
+          seriesIndex+1, len(allSelectedSeriesUIDs),
+          self.selectedSeriesNicknamesDic[seriesUID])
+        self.showStatus(self.progressMessage)
+        logging.debug(self.progressMessage)
+        # Load data
+        from DICOMLib import DICOMUtils
+        DICOMUtils.loadSeriesByUID([seriesUID])
+
+
+  def getSeriesRowNumber(self, seriesInstanceUID):
+    table = self.seriesTableWidget
+    seriesInstanceUIDColumnIndex = self.seriesTableHeaderLabels.index('Series Instance UID')
+    for rowIndex in range(table.rowCount):
+      if table.item(rowIndex, seriesInstanceUIDColumnIndex).text() == seriesInstanceUID:
+        return rowIndex
+    # not found
+    return -1
+
+  def getSeriesDownloadProgressBar(self, seriesInstanceUID):
+    rowIndex = self.getSeriesRowNumber(seriesInstanceUID)
+    if rowIndex < 0:
+      return None
+    return self.seriesTableWidget.cellWidget(rowIndex, self.seriesTableHeaderLabels.index('Status'))
+
+  def downloadSelectedSeries(self):
+    import os
+    self.cancelDownloadButton.enabled = True
+    indexer = ctk.ctkDICOMIndexer()
+    while self.downloadQueue and not self.cancelDownloadRequested:
+      queuedItem = self.downloadQueue.pop(0)
+      selectedStudy = queuedItem['studyInstanceUID']
+      selectedSeries = queuedItem['seriesInstanceUID']
+      downloadFolderPath = queuedItem['downloadFolderPath']
+      if not os.path.exists(downloadFolderPath):
+        logging.debug("Creating directory to keep the downloads: " + downloadFolderPath)
+        os.makedirs(downloadFolderPath)
+      self.progressMessage = "Downloading Images for series InstanceUID: " + selectedSeries
+      self.showStatus(self.progressMessage)
+      logging.debug(self.progressMessage)
+      try:
+        #response = self.DICOMwebClient.get_image(seriesInstanceUid=selectedSeries)
+        instances = self.DICOMwebClient.search_for_instances(
+          study_instance_uid=selectedStudy,
+          series_instance_uid=selectedSeries
+          )
+        self.progressMessage = "Retrieving data from server"
+        logging.debug("Retrieving data from server")
+        self.showStatus(self.progressMessage)
+        slicer.app.processEvents()
+        import hashlib
+        import pydicom
+        # Save server response in current directory
+        numberOfInstances = len(instances)
+
+        currentDownloadProgressBar = self.getSeriesDownloadProgressBar(selectedSeries)
+        if currentDownloadProgressBar:
+          currentDownloadProgressBar.setMaximum(numberOfInstances)
+          currentDownloadProgressBar.setValue(0)
+
+        # Scroll to item being currently downloaded
+        rowIndex = self.getSeriesRowNumber(selectedSeries)
+        self.seriesTableWidget.scrollToItem(self.seriesTableWidget.item(rowIndex, self.seriesTableHeaderLabels.index('Status')))
+
+        instancesAlreadyInDatabase = slicer.dicomDatabase.instancesForSeries(selectedSeries)
+
+        for instanceIndex, instance in enumerate(instances):
+          if self.cancelDownloadRequested:
+            break
+          if currentDownloadProgressBar:
+            currentDownloadProgressBar.setValue(instanceIndex)
+          slicer.app.processEvents()
+
+          sopInstanceUid = instance['00080018']['Value'][0]
+          if sopInstanceUid in instancesAlreadyInDatabase:
+            # instance is already in database
+            continue
+
+          fileName = downloadFolderPath + hashlib.md5(sopInstanceUid.encode()).hexdigest() + '.dcm'
+          if not os.path.isfile(fileName) or not self.useCacheFlag:
+            # logging.debug("Downloading file {0} ({1}) from the DICOMweb server".format(
+            #   filename, sopInstanceUid)
+            retrievedInstance = self.DICOMwebClient.retrieve_instance(
+              study_instance_uid=selectedStudy,
+              series_instance_uid=selectedSeries,
+              sop_instance_uid=sopInstanceUid)
+            pydicom.filewriter.write_file(fileName, retrievedInstance)
+
+        self.clearStatus()
+
+        rowIndex = self.getSeriesRowNumber(selectedSeries)
+        table = self.seriesTableWidget
+        item = table.item(rowIndex, 1)
+        item.setIcon(self.downloadIcon if self.cancelDownloadRequested else self.storedlIcon)
+        if not self.cancelDownloadRequested:
+          if currentDownloadProgressBar:
+            currentDownloadProgressBar.setValue(numberOfInstances)
+          # Import the data into dicomAppWidget and open the dicom browser
+          self.progressMessage = "Adding Files to DICOM Database "
+          self.showStatus(self.progressMessage)
+          indexer.addDirectory(slicer.dicomDatabase, downloadFolderPath, True)  # index with file copy
+          indexer.waitForImportFinished()
+          # Indexing completed, remove files
+          import os
+          for f in os.listdir(downloadFolderPath):
+            os.remove(os.path.join(downloadFolderPath, f))
+          os.rmdir(downloadFolderPath)
+
+        # logging.error("Failed to download images!")
+        self.removeDownloadProgressBar(selectedSeries)
+
+      except Exception as error:
+        self.clearStatus()
+        message = "downloadSelectedSeries: Error in getting response from DICOMweb server.\nHTTP Error:\n" + str(error)
+        qt.QMessageBox.critical(slicer.util.mainWindow(),
+                    'DICOMweb Browser', message, qt.QMessageBox.Ok)
+
+    # Remove remaining queued items (items can remain if the download was cancelled)
+    for queuedItem in self.downloadQueue:
+      self.removeDownloadProgressBar(queuedItem['seriesInstanceUID'])
+    self.downloadQueue = []
+
+    self.cancelDownloadButton.enabled = False
+    self.serverUrlLineEdit.enabled = True
+    self.studiesTableWidget.enabled = True
+
+  def removeDownloadProgressBar(self, selectedSeries):
+    rowIndex = self.getSeriesRowNumber(selectedSeries)
+    if rowIndex < 0:
+      # Already removed
+      return
+    self.seriesTableWidget.setCellWidget(rowIndex, self.seriesTableHeaderLabels.index('Status'), None)
+
+  def setTableCellTextFromDICOM(self, table, columnNames, dicomTags, rowIndex, columnName, columnDicomTag):
+    try:
+      if isinstance(dicomTags, pydicom.dataset.Dataset):
+        values = dicomTags[columnDicomTag].value
+        value = str(values)
+      else:
+        if dicomTags[columnDicomTag]['vr'] == 'PN':
+          values = [value['Alphabetic'] for value in dicomTags[columnDicomTag]['Value']]
+          value = ', '.join(list(values))
+        else:
+          values = dicomTags[columnDicomTag]['Value']
+          value = ', '.join(list(values))
+    except:
+      # tag not found
+      values = None
+      value = ''
+    widget = qt.QTableWidgetItem(value)
+    table.setItem(rowIndex, columnNames.index(columnName), widget)
+    return widget, values
+
+  def populateStudiesTableWidget(self, studies):
+    self.studiesSelectAllButton.enabled = True
+    self.studiesSelectNoneButton.enabled = True
+    # self.clearStudiesTableWidget()
+    table = self.studiesTableWidget
+    tableColumns = self.studiesTableHeaderLabels
+
+    rowIndex = self.studiesTableRowCount
+    table.setRowCount(rowIndex + len(studies))
+
+    from dicomweb_client.api import load_json_dataset
+    for study in studies:
+      widget, value = self.setTableCellTextFromDICOM(table, self.studiesTableHeaderLabels, study, rowIndex, 'Study instance UID', '0020000D')
+      self.studyInstanceUIDWidgets.append(widget)
+      self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Patient name', '00100010')
+      self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Patient ID', '00100020')
+      self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Modality', '00080061')
+      self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Study date', '00080020')
+      self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Study description', '00081030')
+      rowIndex += 1
+    self.studiesTableWidget.resizeColumnsToContents()
+    self.studiesTableWidgetHeader.setStretchLastSection(True)
+    self.studiesTableRowCount = rowIndex
+    # # Resize columns
+    # self.studiesTableWidget.resizeColumnsToContents()
+    # self.studiesTableWidgetHeader.setStretchLastSection(True)
+
+  def populateSeriesTableWidget(self, series):
+    # self.clearSeriesTableWidget()
+    table = self.seriesTableWidget
+    tableColumns = self.seriesTableHeaderLabels
+    self.seriesSelectAllButton.enabled = True
+    self.seriesSelectNoneButton.enabled = True
+
+    rowIndex = self.seriesTableRowCount
+    table.setRowCount(rowIndex + len(series))
+
+    from dicomweb_client.api import load_json_dataset
+    for serieJson in series:
+      serie = load_json_dataset(serieJson)
+      if hasattr(serie, 'SeriesInstanceUID'):
+        widget, seriesInstanceUID = self.setTableCellTextFromDICOM(table, tableColumns, serie, rowIndex, 'Series Instance UID', 'SeriesInstanceUID')
+        self.seriesInstanceUIDWidgets.append(widget)
+        # Download status item
+        if slicer.dicomDatabase.studyForSeries(seriesInstanceUID):
+          self.removeSeriesAction.enabled = True
+          icon = self.storedlIcon
+        else:
+          icon = self.downloadIcon
+        downloadStatusItem = qt.QTableWidgetItem('')
+        downloadStatusItem.setTextAlignment(qt.Qt.AlignCenter)
+        downloadStatusItem.setIcon(icon)
+        table.setItem(rowIndex, self.seriesTableHeaderLabels.index('Status'), downloadStatusItem)
+
+      self.setTableCellTextFromDICOM(table, tableColumns, serie, rowIndex, 'Modality', 'Modality')
+      self.setTableCellTextFromDICOM(table, tableColumns, serie, rowIndex, 'Series number', 'SeriesNumber')
+      self.setTableCellTextFromDICOM(table, tableColumns, serie, rowIndex, 'Series description', 'SeriesDescription')
+      self.setTableCellTextFromDICOM(table, tableColumns, serie, rowIndex, 'Image count', 'NumberOfSeriesRelatedInstances')
+
+      rowIndex += 1
+
+    self.seriesTableRowCount = rowIndex
+
+    # # Resize columns
+    # self.seriesTableWidget.resizeColumnsToContents()
+    # self.seriesTableWidgetHeader.setStretchLastSection(True)
+
+  def clearStudiesTableWidget(self):
+    self.studiesTableRowCount = 0
+    table = self.studiesTableWidget
+    self.studiesCollapsibleGroupBox.setTitle('Studies')
+    self.studyInstanceUIDWidgets = []
+    table.clear()
+    table.setHorizontalHeaderLabels(self.studiesTableHeaderLabels)
+
+  def clearSeriesTableWidget(self):
+    self.seriesTableRowCount = 0
+    table = self.seriesTableWidget
+    self.seriesCollapsibleGroupBox.setTitle('Series')
+    self.seriesInstanceUIDWidgets = []
+    table.clear()
+    table.setHorizontalHeaderLabels(self.seriesTableHeaderLabels)
+
+  def onReload(self, moduleName="DICOMwebBrowser"):
+    """Generic reload method for any scripted module.
+    ModuleWizard will subsitute correct default moduleName.
+    """
+    import imp, sys, os, slicer
+    import time
+    import string, json
+    import os.path
+
+    widgetName = moduleName + "Widget"
+
+    # reload the source code
+    # - set source file path
+    # - load the module to the global space
+    filePath = eval('slicer.modules.%s.path' % moduleName.lower())
+    p = os.path.dirname(filePath)
+    if not sys.path.__contains__(p):
+      sys.path.insert(0, p)
+    fp = open(filePath, "rb")
+    globals()[moduleName] = imp.load_module(
+      moduleName, fp, filePath, ('.py', 'r', imp.PY_SOURCE))
+    fp.close()
+
+    # rebuild the widget
+    # - find and hide the existing widget
+    # - create a new widget in the existing parent
+    parent = slicer.util.findChildren(name='%s Reload' % moduleName)[0].parent().parent()
+    for child in parent.children():
+      try:
+        child.hide()
+      except AttributeError:
+        pass
+    # Remove spacer items
+    item = parent.layout().itemAt(0)
+    while item:
+      parent.layout().removeItem(item)
+      item = parent.layout().itemAt(0)
+
+    # delete the old widget instance
+    if hasattr(globals()['slicer'].modules, widgetName):
+      getattr(globals()['slicer'].modules, widgetName).cleanup()
+
+    # create new widget inside existing parent
+    globals()[widgetName.lower()] = eval(
+      'globals()["%s"].%s(parent)' % (moduleName, widgetName))
+    globals()[widgetName.lower()].setup()
+    setattr(globals()['slicer'].modules, widgetName, globals()[widgetName.lower()])
+
+  def onReloadAndTest(self, moduleName="DICOMwebBrowser"):
+    self.onReload()
+    evalString = 'globals()["%s"].%sTest()' % (moduleName, moduleName)
+    tester = eval(evalString)
+    tester.runTest()
+
+
+#
+# DICOMwebBrowserLogic
+#
+
+class DICOMwebBrowserLogic(ScriptedLoadableModuleLogic):
+  """This class should implement all the actual
+  computation done by your module.  The interface
+  should be such that other python code can import
+  this class and make use of the functionality without
+  requiring an instance of the Widget
+  """
+
+  def __init__(self):
+    pass
+
+  def hasImageData(self, volumeNode):
+    """This is a dummy logic method that
+    returns true if the passed in volume
+    node has valid image data
+    """
+    if not volumeNode:
+      print('no volume node')
+      return False
+    if volumeNode.GetImageData() == None:
+      print('no image data')
+      return False
+    return True
+
+  def delayDisplay(self, message, msec=1000):
+    #
+    # logic version of delay display
+    #
+    print(message)
+    self.info = qt.QDialog()
+    self.infoLayout = qt.QVBoxLayout()
+    self.info.setLayout(self.infoLayout)
+    self.label = qt.QLabel(message, self.info)
+    self.infoLayout.addWidget(self.label)
+    qt.QTimer.singleShot(msec, self.info.close)
+    self.info.exec_()
+
+  def takeScreenshot(self, name, description, type=-1):
+    # show the message even if not taking a screen shot
+    self.delayDisplay(description)
+
+    if self.enableScreenshots == 0:
+      return
+
+    lm = slicer.app.layoutManager()
+    # switch on the type to get the requested window
+    widget = 0
+    if type == -1:
+      # full window
+      widget = slicer.util.mainWindow()
+    elif type == slicer.qMRMLScreenShotDialog().FullLayout:
+      # full layout
+      widget = lm.viewport()
+    elif type == slicer.qMRMLScreenShotDialog().ThreeD:
+      # just the 3D window
+      widget = lm.threeDWidget(0).threeDView()
+    elif type == slicer.qMRMLScreenShotDialog().Red:
+      # red slice window
+      widget = lm.sliceWidget("Red")
+    elif type == slicer.qMRMLScreenShotDialog().Yellow:
+      # yellow slice window
+      widget = lm.sliceWidget("Yellow")
+    elif type == slicer.qMRMLScreenShotDialog().Green:
+      # green slice window
+      widget = lm.sliceWidget("Green")
+
+    # grab and convert to vtk image data
+    qpixMap = qt.QPixmap().grabWidget(widget)
+    qimage = qpixMap.toImage()
+    imageData = vtk.vtkImageData()
+    slicer.qMRMLUtils().qImageToVtkImageData(qimage, imageData)
+
+    annotationLogic = slicer.modules.annotations.logic()
+    annotationLogic.CreateSnapShot(name, description, type, self.screenshotScaleFactor, imageData)
+
+  def run(self, inputVolume, outputVolume, enableScreenshots=0, screenshotScaleFactor=1):
+    """
+    Run the actual algorithm
+    """
+
+    self.delayDisplay('Running the aglorithm')
+
+    self.enableScreenshots = enableScreenshots
+    self.screenshotScaleFactor = screenshotScaleFactor
+
+    self.takeScreenshot('DICOMwebBrowser-Start', 'Start', -1)
+
+    return True
+
+
+class DICOMwebBrowserTest(unittest.TestCase):
+  """
+  This is the test case for your scripted module.
+  """
+
+  def delayDisplay(self, message, msec=1000):
+    """This utility method displays a small dialog and waits.
+    This does two things: 1) it lets the event loop catch up
+    to the state of the test so that rendering and widget updates
+    have all taken place before the test continues and 2) it
+    shows the user/developer/tester the state of the test
+    so that we'll know when it breaks.
+    """
+    print(message)
+    self.info = qt.QDialog()
+    self.infoLayout = qt.QVBoxLayout()
+    self.info.setLayout(self.infoLayout)
+    self.label = qt.QLabel(message, self.info)
+    self.infoLayout.addWidget(self.label)
+    qt.QTimer.singleShot(msec, self.info.close)
+    self.info.exec_()
+
+  def setUp(self):
+    """ Do whatever is needed to reset the state - typically a scene clear will be enough.
+    """
+    slicer.mrmlScene.Clear(0)
+
+  def runTest(self):
+    import traceback
+    """Run as few or as many tests as needed here.
+    """
+    self.setUp()
+    self.testBrowserDownloadAndLoad()
+
+  def testBrowserDownloadAndLoad(self):
+    from random import randint
+
+    self.delayDisplay("Starting the test")
+    widget = DICOMwebBrowserWidget(None)
+    widget.showBrowser()
+    widget.connectToServer()
+
+    browserWindow = widget.browserWidget
+    collectionsCombobox = browserWindow.findChildren('QComboBox')[0]
+    print('Number of collections: {}'.format(collectionsCombobox.count))
+    if collectionsCombobox.count > 0:
+      collectionsCombobox.setCurrentIndex(randint(0, collectionsCombobox.count - 1))
+      currentCollection = collectionsCombobox.currentText
+      if currentCollection != '':
+        print('connected to the server successfully')
+        print('current collection: {}'.format(currentCollection))
+
+      tableWidgets = browserWindow.findChildren('QTableWidget')
+
+      patientsTable = tableWidgets[0]
+      if patientsTable.rowCount > 0:
+        selectedRow = randint(0, patientsTable.rowCount - 1)
+        selectedPatient = patientsTable.item(selectedRow, 0).text()
+        if selectedPatient != '':
+          print('selected patient: {}'.format(selectedPatient))
+          patientsTable.selectRow(selectedRow)
+
+        studiesTable = tableWidgets[1]
+        if studiesTable.rowCount > 0:
+          selectedRow = randint(0, studiesTable.rowCount - 1)
+          selectedStudy = studiesTable.item(selectedRow, 0).text()
+          if selectedStudy != '':
+            print('selected study: {}'.format(selectedStudy))
+            studiesTable.selectRow(selectedRow)
+
+          seriesTable = tableWidgets[2]
+          if seriesTable.rowCount > 0:
+            selectedRow = randint(0, seriesTable.rowCount - 1)
+            selectedSeries = seriesTable.item(selectedRow, 0).text()
+            if selectedSeries != '':
+              print('selected series to download: {}'.format(selectedSeries))
+              seriesTable.selectRow(selectedRow)
+
+            pushButtons = browserWindow.findChildren('QPushButton')
+            for pushButton in pushButtons:
+              toolTip = pushButton.toolTip
+              if toolTip[16:20] == 'Load':
+                loadButton = pushButton
+
+            if loadButton != None:
+              loadButton.click()
+            else:
+              print('could not find Load button')
+    else:
+      print("Test Failed. No collection found.")
+    scene = slicer.mrmlScene
+    self.assertEqual(scene.GetNumberOfNodesByClass('vtkMRMLScalarVolumeNode'), 1)
+    self.delayDisplay('Browser Test Passed!')

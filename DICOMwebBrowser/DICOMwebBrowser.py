@@ -135,10 +135,10 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
     #
     # Use Cache CheckBox
     #
-    self.useCacheCeckBox = qt.QCheckBox("Cache server responses")
-    self.useCacheCeckBox.toolTip = '''For faster browsing if this box is checked\
-    the browser will cache server responses and on further calls\
-    would populate tables based on saved data on disk.'''
+    self.useCacheCeckBox = qt.QCheckBox("Use cached server responses")
+    self.useCacheCeckBox.toolTip = """For faster browsing, if this box is checked \
+the browser will use cached server responses and on further calls would populate tables based on saved data on disk. \
+Disable if data is added or removed from the database."""
 
     serverFormLayout.addWidget(self.useCacheCeckBox)
     self.useCacheCeckBox.setCheckState(True)
@@ -219,6 +219,8 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
     self.seriesTableWidget.setSelectionBehavior(qt.QAbstractItemView.SelectRows)
     self.seriesTableWidget.setSelectionMode(3)
     self.seriesTableWidgetHeader = self.seriesTableWidget.horizontalHeader()
+    self.seriesItemSeriesInstanceUIDRole = qt.Qt.UserRole
+    self.seriesItemStudyInstanceUIDRole = qt.Qt.UserRole+1
 
     self.seriesTableWidget.resizeColumnsToContents()
     self.seriesTableWidgetHeader.setStretchLastSection(True)
@@ -297,9 +299,11 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
     # delete data context menu
     #
     self.seriesTableWidget.setContextMenuPolicy(2)
-    self.removeSeriesAction = qt.QAction("Remove from disk", self.seriesTableWidget)
-    self.seriesTableWidget.addAction(self.removeSeriesAction)
-    # self.removeSeriesAction.enabled = False
+    self.removeSeriesFromLocalDatabaseAction = qt.QAction("Remove from disk", self.seriesTableWidget)
+    self.seriesTableWidget.addAction(self.removeSeriesFromLocalDatabaseAction)
+    # self.removeSeriesFromLocalDatabaseAction.enabled = False
+    self.removeSeriesFromServerAction = qt.QAction("Remove from remote server", self.seriesTableWidget)
+    self.seriesTableWidget.addAction(self.removeSeriesFromServerAction)
 
     #
     # Settings Area
@@ -343,7 +347,8 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
     self.loadButton.connect('clicked(bool)', self.onLoadButton)
     self.cancelDownloadButton.connect('clicked(bool)', self.onCancelDownloadButton)
     self.storagePathButton.connect('directoryChanged(const QString &)', self.onStoragePathButton)
-    self.removeSeriesAction.connect('triggered()', self.onRemoveSeriesContextMenuTriggered)
+    self.removeSeriesFromLocalDatabaseAction.connect('triggered()', self.onRemoveSeriesFromLocalDatabaseContextMenuTriggered)
+    self.removeSeriesFromServerAction.connect('triggered()', self.onRemoveSeriesFromServerContextMenuTriggered)
     self.seriesSelectAllButton.connect('clicked(bool)', self.onSeriesSelectAllButton)
     self.seriesSelectNoneButton.connect('clicked(bool)', self.onSeriesSelectNoneButton)
     self.studiesSelectAllButton.connect('clicked(bool)', self.onStudiesSelectAllButton)
@@ -367,13 +372,35 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
     elif state == 2:
       self.useCacheFlag = True
 
-  def onRemoveSeriesContextMenuTriggered(self):
-    removeList = []
+  def onRemoveSeriesFromLocalDatabaseContextMenuTriggered(self):
     for uid in self.seriesInstanceUIDWidgets:
       if uid.isSelected():
         seriesInstanceUID = uid.text()
         slicer.dicomDatabase.removeSeries(seriesInstanceUID)
     self.studiesTableSelectionChanged()
+
+  def onRemoveSeriesFromServerContextMenuTriggered(self):
+    studySeriesToDelete = []
+    for seriesWidget in self.seriesInstanceUIDWidgets:
+      if seriesWidget.isSelected():
+        seriesInstanceUID = seriesWidget.text()
+        studyInstanceUID = seriesWidget.data(self.seriesItemStudyInstanceUIDRole)
+        studySeriesToDelete.append((studyInstanceUID, seriesInstanceUID))
+    if not studySeriesToDelete:
+      # nothing is selected
+      return
+    # Ask user confirmation
+    if not slicer.util.confirmYesNoDisplay("Are you sure you want to delete {0} series from the remote server?".format(len(studySeriesToDelete)),
+      parent=self.browserWidget):
+      return
+    # Delete from server
+    for studyInstanceUID, seriesInstanceUID in studySeriesToDelete:
+      self.DICOMwebClient.delete_series(studyInstanceUID, seriesInstanceUID)
+    # Update view
+    originalUseCacheFlag = self.useCacheFlag
+    self.useCacheFlag = False
+    self.studiesTableSelectionChanged()
+    self.useCacheFlag = originalUseCacheFlag
 
   def showBrowser(self):
     if not self.browserWidget.isVisible():
@@ -562,51 +589,59 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
     self.cancelDownloadRequested = True
 
   def addSelectedToDownloadQueue(self, loadToScene):
-    self.cancelDownloadRequested = False
-    allSelectedSeriesUIDs = []
+    try:
+      qt.QApplication.setOverrideCursor(qt.Qt.WaitCursor)
 
-    import hashlib
-    for widgetIndex in range(len(self.seriesInstanceUIDWidgets)):
-      # print self.seriesInstanceUIDWidgets[widgetIndex]
-      if not self.seriesInstanceUIDWidgets[widgetIndex].isSelected():
-        continue
-      selectedCollection = self.serverUrl
-      selectedPatient = ""  # TODO
-      selectedStudy = self.selectedStudyInstanceUID
-      selectedSeriesInstanceUID = self.seriesInstanceUIDWidgets[widgetIndex].text()
-      allSelectedSeriesUIDs.append(selectedSeriesInstanceUID)
-      self.selectedSeriesNicknamesDic[selectedSeriesInstanceUID] = "{0} - {1} - {2}".format(selectedPatient, self.selectedStudyRow + 1, widgetIndex + 1)
+      self.cancelDownloadRequested = False
+      allSelectedSeriesUIDs = []
 
-      # create download queue
-      downloadProgressBar = qt.QProgressBar()
-      self.seriesTableWidget.setCellWidget(widgetIndex, self.seriesTableHeaderLabels.index('Status'), downloadProgressBar)
-      # Download folder name is set from series instance 
-      downloadFolderPath = os.path.join(self.storagePath, hashlib.md5(selectedSeriesInstanceUID.encode()).hexdigest()) + os.sep
-      self.downloadQueue.append({'studyInstanceUID': selectedStudy, 'seriesInstanceUID': selectedSeriesInstanceUID,
-                                  'downloadFolderPath': downloadFolderPath, 'downloadProgressBar': downloadProgressBar})
+      import hashlib
+      for widgetIndex in range(len(self.seriesInstanceUIDWidgets)):
+        # print self.seriesInstanceUIDWidgets[widgetIndex]
+        if not self.seriesInstanceUIDWidgets[widgetIndex].isSelected():
+          continue
+        selectedCollection = self.serverUrl
+        selectedPatient = ""  # TODO
+        selectedStudy = self.selectedStudyInstanceUID
+        selectedSeriesInstanceUID = self.seriesInstanceUIDWidgets[widgetIndex].text()
+        allSelectedSeriesUIDs.append(selectedSeriesInstanceUID)
+        self.selectedSeriesNicknamesDic[selectedSeriesInstanceUID] = "{0} - {1} - {2}".format(selectedPatient, self.selectedStudyRow + 1, widgetIndex + 1)
 
-    self.seriesTableWidget.clearSelection()
-    self.studiesTableWidget.enabled = False
-    self.serverUrlLineEdit.enabled = False
+        # create download queue
+        downloadProgressBar = qt.QProgressBar()
+        self.seriesTableWidget.setCellWidget(widgetIndex, self.seriesTableHeaderLabels.index('Status'), downloadProgressBar)
+        # Download folder name is set from series instance 
+        downloadFolderPath = os.path.join(self.storagePath, hashlib.md5(selectedSeriesInstanceUID.encode()).hexdigest()) + os.sep
+        self.downloadQueue.append({'studyInstanceUID': selectedStudy, 'seriesInstanceUID': selectedSeriesInstanceUID,
+                                    'downloadFolderPath': downloadFolderPath, 'downloadProgressBar': downloadProgressBar})
 
-    # Download data sets
-    selectedSeriesUIDs = self.downloadSelectedSeries()
+      self.seriesTableWidget.clearSelection()
+      self.studiesTableWidget.enabled = False
+      self.serverUrlLineEdit.enabled = False
 
-    # Load data sets into the scene
-    if loadToScene:
-      for seriesIndex, seriesUID in enumerate(allSelectedSeriesUIDs):
-        if self.cancelDownloadRequested:
-          break
-        # Print progress message
-        self.progressMessage = "Loading data into the scene {0}/{1}: {2}".format(
-          seriesIndex+1, len(allSelectedSeriesUIDs),
-          self.selectedSeriesNicknamesDic[seriesUID])
-        self.showStatus(self.progressMessage)
-        logging.debug(self.progressMessage)
-        # Load data
-        from DICOMLib import DICOMUtils
-        DICOMUtils.loadSeriesByUID([seriesUID])
+      # Download data sets
+      selectedSeriesUIDs = self.downloadSelectedSeries()
 
+      # Load data sets into the scene
+      if loadToScene:
+        for seriesIndex, seriesUID in enumerate(allSelectedSeriesUIDs):
+          if self.cancelDownloadRequested:
+            break
+          # Print progress message
+          self.progressMessage = "loading series {0}/{1}".format(
+            seriesIndex+1, len(allSelectedSeriesUIDs))  # TODO: show some more info, such as self.selectedSeriesNicknamesDic[seriesUID]
+          self.showStatus(self.progressMessage, waitMessage='Loading data into the scene .... ')
+          logging.debug(self.progressMessage)
+          # Load data
+          from DICOMLib import DICOMUtils
+          DICOMUtils.loadSeriesByUID([seriesUID])
+
+      qt.QApplication.restoreOverrideCursor()
+    except Exception as error:
+      qt.QApplication.restoreOverrideCursor()
+      slicer.util.errorDisplay("Data loading failed.", parent=self.browserWidget, detailedText=traceback.format_exc())
+
+    self.clearStatus()
 
   def getSeriesRowNumber(self, seriesInstanceUID):
     table = self.seriesTableWidget
@@ -793,10 +828,12 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
       serie = load_json_dataset(serieJson)
       if hasattr(serie, 'SeriesInstanceUID'):
         widget, seriesInstanceUID = self.setTableCellTextFromDICOM(table, tableColumns, serie, rowIndex, 'Series Instance UID', 'SeriesInstanceUID')
+        widget.setData(self.seriesItemSeriesInstanceUIDRole, serie.SeriesInstanceUID)
+        widget.setData(self.seriesItemStudyInstanceUIDRole, serie.StudyInstanceUID)
         self.seriesInstanceUIDWidgets.append(widget)
         # Download status item
         if slicer.dicomDatabase.studyForSeries(seriesInstanceUID):
-          self.removeSeriesAction.enabled = True
+          self.removeSeriesFromLocalDatabaseAction.enabled = True
           icon = self.storedlIcon
         else:
           icon = self.downloadIcon

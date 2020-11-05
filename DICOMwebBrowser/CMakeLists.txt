@@ -9,7 +9,7 @@ set(MODULE_PYTHON_SCRIPTS
 set(MODULE_PYTHON_RESOURCES
   Resources/Icons/downloadAndIndex.png
   Resources/Icons/downloadAndLoad.png
-  Resources/Icons/DICOMWebBrowser.png
+  Resources/Icons/DICOMwebBrowser.png
   Resources/Icons/stored.png
   Resources/Icons/download.png
   Resources/Icons/cancel.png

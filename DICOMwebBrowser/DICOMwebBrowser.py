@@ -25,7 +25,7 @@ class DICOMwebBrowser(ScriptedLoadableModule):
     self.parent.categories = ["Informatics"]
     self.parent.dependencies = ["DICOM"]
     self.parent.contributors = ["Andras Lasso (PerkLab, Queen's)",
-      "Alireza Mehrtash (Brigham and Women's Hospital)", 
+      "Alireza Mehrtash (Brigham and Women's Hospital)",
       "Andrey Fedorov (Brigham and Women's Hospital)"]
     self.parent.helpText = """Browse and retrieve DICOM data sets from DICOMweb server."""
     self.parent.acknowledgementText = """<img src=':Logos/QIICR.png'><br><br>
@@ -363,7 +363,7 @@ Disable if data is added or removed from the database."""
 
     # Add vertical spacer
     self.layout.addStretch(1)
-    
+
     #self.connectToServer()
 
 
@@ -481,10 +481,23 @@ Disable if data is added or removed from the database."""
     import dicomweb_client.log
     dicomweb_client.log.configure_logging(2)
     from dicomweb_client.api import DICOMwebClient
+    effectiveServerUrl = self.serverUrl
     headers = {}
-    if self.serverUrl.find("googleapis.com") != -1:
-        headers["Authorization"] = f"Bearer {GoogleCloudPlatform().token()}"
-    self.DICOMwebClient = DICOMwebClient(url=self.serverUrl, headers=headers)
+    # Setting up of the DICOMweb client from various server parameters can be done
+    # in plugins in the future, but for now just hardcode special initialization
+    # steps for a few server types.
+    if "googleapis.com" in self.serverUrl:
+      # Google Healthcare API
+      headers["Authorization"] = f"Bearer {GoogleCloudPlatform().token()}"
+    elif "kheops" in self.serverUrl:
+      # Kheops DICOMweb API endpoint from browser view URL
+      url = qt.QUrl(self.serverUrl)
+      if url.path().startswith('/view/'):
+        # This is a kheops viewer URL
+        token = url.path().replace('/view/','')
+        effectiveServerUrl = f"https://token:{token}@demo.kheops.online/api"
+
+    self.DICOMwebClient = DICOMwebClient(url=effectiveServerUrl, headers=headers)
 
     studiesList = None
     if os.path.isfile(cacheFile) and self.useCacheFlag:
@@ -504,7 +517,7 @@ Disable if data is added or removed from the database."""
         # Get all studies
         studies = []
         offset = 0
-        
+
         while True:
             subset = self.DICOMwebClient.search_for_studies(offset=offset)
             if len(subset) == 0:
@@ -639,7 +652,7 @@ Disable if data is added or removed from the database."""
         # create download queue
         downloadProgressBar = qt.QProgressBar()
         self.seriesTableWidget.setCellWidget(widgetIndex, self.seriesTableHeaderLabels.index('Status'), downloadProgressBar)
-        # Download folder name is set from series instance 
+        # Download folder name is set from series instance
         downloadFolderPath = os.path.join(self.storagePath, hashlib.md5(selectedSeriesInstanceUID.encode()).hexdigest()) + os.sep
         self.downloadQueue.append({'studyInstanceUID': selectedStudy, 'seriesInstanceUID': selectedSeriesInstanceUID,
                                     'downloadFolderPath': downloadFolderPath, 'downloadProgressBar': downloadProgressBar})

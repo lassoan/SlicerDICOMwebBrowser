@@ -104,6 +104,12 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
       self.browserWidget.setGeometry(self.popupGeometry)
 
     #
+    # Select DICOM Store Button
+    #
+    self.selectDICOMStoreButton = qt.QPushButton("Select DICOM Store")
+    browserLayout.addWidget(self.selectDICOMStoreButton)
+
+    #
     # Show Browser Button
     #
     self.showBrowserButton = qt.QPushButton("Show Browser")
@@ -339,6 +345,7 @@ Disable if data is added or removed from the database."""
 
     # connections
     self.showBrowserButton.connect('clicked(bool)', self.onShowBrowserButton)
+    self.selectDICOMStoreButton.connect('clicked(bool)', self.onSelectDICOMStoreButton)
     self.connectToServerButton.connect('clicked()', self.connectToServer)
     self.studiesTableWidget.connect('itemSelectionChanged()', self.studiesTableSelectionChanged)
     self.seriesTableWidget.connect('itemSelectionChanged()', self.seriesSelected)
@@ -365,6 +372,21 @@ Disable if data is added or removed from the database."""
 
   def onShowBrowserButton(self):
     self.showBrowser()
+
+  def onSelectDICOMStoreButton(self):
+    self.gcpSelectorDialog = GCPSelectorDialog()
+    self.gcpSelectorDialog.connect("finished(int)", self.onGCPSelectorDialogFinished)
+
+  def onGCPSelectorDialogFinished(self):
+
+    url = "https://healthcare.googleapis.com/v1beta1"
+    url += f"/projects/{self.gcpSelectorDialog.project}"
+    url += f"/locations/{self.gcpSelectorDialog.location}"
+    url += f"/datasets/{self.gcpSelectorDialog.dataset}"
+    url += f"/dicomStores/{self.gcpSelectorDialog.dicomStore}"
+    url += "/dicomWeb"
+
+    qt.QSettings().setValue('DICOMwebBrowser/ServerURL', url)
 
   def onUseCacheStateChanged(self, state):
     if state == 0:
@@ -456,8 +478,13 @@ Disable if data is added or removed from the database."""
     self.progressMessage = "Getting available studies for server: " + self.serverUrl
     self.showStatus(self.progressMessage)
 
+    import dicomweb_client.log
+    dicomweb_client.log.configure_logging(2)
     from dicomweb_client.api import DICOMwebClient
-    self.DICOMwebClient = DICOMwebClient(url=self.serverUrl)
+    headers = {}
+    if self.serverUrl.find("googleapis.com") != -1:
+        headers["Authorization"] = f"Bearer {GoogleCloudPlatform().token()}"
+    self.DICOMwebClient = DICOMwebClient(url=self.serverUrl, headers=headers)
 
     studiesList = None
     if os.path.isfile(cacheFile) and self.useCacheFlag:
@@ -522,7 +549,7 @@ Disable if data is added or removed from the database."""
     if os.path.isfile(cacheFile) and self.useCacheFlag:
       with open(cacheFile, 'r') as openfile:
         series = json.load(openfile)
-      self.populateSeriesTableWidget(series)
+      self.populateSeriesTableWidget(self.selectedStudyInstanceUID, series)
       self.clearStatus()
       if self.numberOfSelectedStudies == 1:
         groupBoxTitle = 'Series (Accessed: ' + time.ctime(os.path.getmtime(cacheFile)) + ')'
@@ -537,7 +564,7 @@ Disable if data is added or removed from the database."""
         # Save to cache
         with open(cacheFile, 'w') as f:
           json.dump(series, f)
-        self.populateSeriesTableWidget(series)
+        self.populateSeriesTableWidget(self.selectedStudyInstanceUID, series)
         if self.numberOfSelectedStudies == 1:
           groupBoxTitle = 'Series (Accessed: ' + time.ctime(os.path.getmtime(cacheFile)) + ')'
         else:
@@ -547,6 +574,8 @@ Disable if data is added or removed from the database."""
         self.clearStatus()
 
       except Exception as error:
+        import traceback
+        traceback.print_exc()
         self.clearStatus()
         message = "studySelected: Error in getting response from DICOMweb server.\nError:\n" + str(error)
         qt.QMessageBox.critical(slicer.util.mainWindow(),
@@ -813,7 +842,7 @@ Disable if data is added or removed from the database."""
     # self.studiesTableWidget.resizeColumnsToContents()
     # self.studiesTableWidgetHeader.setStretchLastSection(True)
 
-  def populateSeriesTableWidget(self, series):
+  def populateSeriesTableWidget(self, studyUID, series):
     # self.clearSeriesTableWidget()
     table = self.seriesTableWidget
     tableColumns = self.seriesTableHeaderLabels
@@ -829,7 +858,7 @@ Disable if data is added or removed from the database."""
       if hasattr(serie, 'SeriesInstanceUID'):
         widget, seriesInstanceUID = self.setTableCellTextFromDICOM(table, tableColumns, serie, rowIndex, 'Series Instance UID', 'SeriesInstanceUID')
         widget.setData(self.seriesItemSeriesInstanceUIDRole, serie.SeriesInstanceUID)
-        widget.setData(self.seriesItemStudyInstanceUIDRole, serie.StudyInstanceUID)
+        widget.setData(self.seriesItemStudyInstanceUIDRole, studyUID)
         self.seriesInstanceUIDWidgets.append(widget)
         # Download status item
         if slicer.dicomDatabase.studyForSeries(seriesInstanceUID):
@@ -871,59 +900,115 @@ Disable if data is added or removed from the database."""
     table.clear()
     table.setHorizontalHeaderLabels(self.seriesTableHeaderLabels)
 
-  def onReload(self, moduleName="DICOMwebBrowser"):
-    """Generic reload method for any scripted module.
-    ModuleWizard will subsitute correct default moduleName.
-    """
-    import imp, sys, os, slicer
-    import time
-    import string, json
-    import os.path
-
-    widgetName = moduleName + "Widget"
-
-    # reload the source code
-    # - set source file path
-    # - load the module to the global space
-    filePath = eval('slicer.modules.%s.path' % moduleName.lower())
-    p = os.path.dirname(filePath)
-    if not sys.path.__contains__(p):
-      sys.path.insert(0, p)
-    fp = open(filePath, "rb")
-    globals()[moduleName] = imp.load_module(
-      moduleName, fp, filePath, ('.py', 'r', imp.PY_SOURCE))
-    fp.close()
-
-    # rebuild the widget
-    # - find and hide the existing widget
-    # - create a new widget in the existing parent
-    parent = slicer.util.findChildren(name='%s Reload' % moduleName)[0].parent().parent()
-    for child in parent.children():
-      try:
-        child.hide()
-      except AttributeError:
-        pass
-    # Remove spacer items
-    item = parent.layout().itemAt(0)
-    while item:
-      parent.layout().removeItem(item)
-      item = parent.layout().itemAt(0)
-
-    # delete the old widget instance
-    if hasattr(globals()['slicer'].modules, widgetName):
-      getattr(globals()['slicer'].modules, widgetName).cleanup()
-
-    # create new widget inside existing parent
-    globals()[widgetName.lower()] = eval(
-      'globals()["%s"].%s(parent)' % (moduleName, widgetName))
-    globals()[widgetName.lower()].setup()
-    setattr(globals()['slicer'].modules, widgetName, globals()[widgetName.lower()])
-
   def onReloadAndTest(self, moduleName="DICOMwebBrowser"):
     self.onReload()
     evalString = 'globals()["%s"].%sTest()' % (moduleName, moduleName)
     tester = eval(evalString)
     tester.runTest()
+
+class GCPSelectorDialog(qt.QDialog):
+  """Implement the Qt dialog for selecting a GCP DICOM Store
+  """
+
+  def __init__(self, parent="mainWindow"):
+    super(GCPSelectorDialog, self).__init__(slicer.util.mainWindow() if parent == "mainWindow" else parent)
+    self.setWindowTitle('Select DICOM Store')
+    self.setWindowModality(1)
+    self.setLayout(qt.QVBoxLayout())
+    self.setMinimumWidth(600)
+    self.gcp = GoogleCloudPlatform()
+    self.open()
+
+    self.project = None
+    self.location = None
+    self.dataset = None
+    self.dicomStore = None
+
+  def open(self):
+    # Send Parameters
+    self.dicomFrame = qt.QFrame(self)
+    self.dicomFormLayout = qt.QFormLayout()
+    self.dicomFrame.setLayout(self.dicomFormLayout)
+
+    self.projectSelectorCombobox = qt.QComboBox()
+    self.dicomFormLayout.addRow("Project: ", self.projectSelectorCombobox)
+    self.projectSelectorCombobox.addItems(self.gcp.projects())
+    self.projectSelectorCombobox.connect("currentIndexChanged(int)", self.onProjectSelected)
+
+    self.datasetSelectorCombobox = qt.QComboBox()
+    self.dicomFormLayout.addRow("Dataset: ", self.datasetSelectorCombobox)
+    self.datasetSelectorCombobox.connect("currentIndexChanged(int)", self.onDatasetSelected)
+
+    self.dicomStoreSelectorCombobox = qt.QComboBox()
+    self.dicomFormLayout.addRow("DICOM Store: ", self.dicomStoreSelectorCombobox)
+    self.dicomStoreSelectorCombobox.connect("currentIndexChanged(int)", self.onDICOMStoreSelected)
+
+    self.layout().addWidget(self.dicomFrame)
+
+    # button box
+    self.bbox = qt.QDialogButtonBox(self)
+    self.bbox.addButton(self.bbox.Ok)
+    self.bbox.button(self.bbox.Ok).enabled = False
+    self.bbox.addButton(self.bbox.Cancel)
+    self.bbox.accepted.connect(self.onOk)
+    self.bbox.rejected.connect(self.onCancel)
+    self.layout().addWidget(self.bbox)
+
+    qt.QDialog.open(self)
+
+
+  def onProjectSelected(self):
+    self.project = self.projectSelectorCombobox.currentText.split()[0]
+    self.datasetSelectorCombobox.clear()
+    self.dicomStoreSelectorCombobox.clear()
+    qt.QTimer.singleShot(0, lambda : self.datasetSelectorCombobox.addItems(self.gcp.datasets(self.project)))
+
+  def onDatasetSelected(self):
+    datasetTextList = self.datasetSelectorCombobox.currentText.split()
+    self.dataset = datasetTextList[0]
+    self.location = datasetTextList[1]
+    self.dicomStoreSelectorCombobox.clear()
+    qt.QTimer.singleShot(0, lambda : self.dicomStoreSelectorCombobox.addItems(self.gcp.dicomStores(self.project, self.dataset)))
+
+  def onDICOMStoreSelected(self):
+    currentText = self.dicomStoreSelectorCombobox.currentText
+    if currentText != "":
+      self.dicomStore = currentText.split()[0]
+      self.bbox.button(self.bbox.Ok).enabled = True
+
+
+  def onOk(self):
+    self.accept()
+    self.close()
+
+  def onCancel(self):
+    self.projectSelectorCombobox.clear()
+    self.datasetSelectorCombobox.clear()
+    self.dicomStoreSelectorCombobox.clear()
+    self.reject()
+    self.close()
+
+
+class GoogleCloudPlatform(object):
+
+  def gcloud(self, subcommand):
+    process = qt.QProcess()
+    process.start("gcloud", subcommand.split())
+    process.waitForFinished()
+    result = process.readAllStandardOutput().data().decode()
+    return result
+
+  def projects(self):
+    return self.gcloud("projects list").split("\n")[1:]
+
+  def datasets(self, project):
+    return self.gcloud(f"--project {project} healthcare datasets list").split("\n")[1:]
+
+  def dicomStores(self, project, dataset):
+    return self.gcloud(f"--project {project} healthcare dicom-stores list --dataset {dataset}").split("\n")[1:]
+
+  def token(self):
+    return self.gcloud("auth print-access-token").strip()
 
 
 #
@@ -940,6 +1025,7 @@ class DICOMwebBrowserLogic(ScriptedLoadableModuleLogic):
 
   def __init__(self):
     pass
+
 
   def hasImageData(self, volumeNode):
     """This is a dummy logic method that

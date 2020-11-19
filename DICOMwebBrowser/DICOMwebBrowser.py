@@ -40,6 +40,7 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
   def __init__(self, parent=None):
     ScriptedLoadableModuleWidget.__init__(self, parent)
 
+    self.showBrowserOnEnter = True
     self.DICOMwebClient = None
 
     self.browserWidget = qt.QWidget()
@@ -64,16 +65,34 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
     self.useCacheFlag = True
 
   def enter(self):
-    self.showBrowser()
+    if self.showBrowserOnEnter:
+      self.showBrowser()
 
   def setup(self):
     ScriptedLoadableModuleWidget.setup(self)
 
+    # Ensure that correct version of dicomweb-clien Python package is installed
+    needRestart = False
+    needInstall = False
     try:
       import dicomweb_client
+      from packaging import version
+      if version.parse(dicomweb_client.__version__) >= version.parse("0.50"):
+        if not slicer.util.confirmOkCancelDisplay("DICOMweb browser requires installation of dicomweb-client 0.40 and restart the application"):
+          self.showBrowserOnEnter = False
+          return
+        needRestart = True
+        needInstall = True
     except ModuleNotFoundError:
-      pip_install('dicomweb-client')
+      needInstall = True
+
+    if needInstall:
+      # pythonweb-client 0.50 is currently broken (https://github.com/MGHComputationalPathology/dicomweb-client/issues/41)
+      # stick to 0.40 for now
+      slicer.util.pip_install('dicomweb-client<0.50')
       import dicomweb_client
+    if needRestart:
+      slicer.util.restart()
 
     # Instantiate and connect widgets ...
     downloadAndIndexIcon = qt.QIcon(self.resourcePath('Icons/downloadAndIndex.png'))

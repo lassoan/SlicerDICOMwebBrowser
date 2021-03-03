@@ -74,11 +74,12 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
     # Ensure that correct version of dicomweb-clien Python package is installed
     needRestart = False
     needInstall = False
+    minimumDicomwebClientVersion = "0.51"
     try:
       import dicomweb_client
       from packaging import version
-      if version.parse(dicomweb_client.__version__) >= version.parse("0.50"):
-        if not slicer.util.confirmOkCancelDisplay("DICOMweb browser requires installation of dicomweb-client 0.40 and restart the application"):
+      if version.parse(dicomweb_client.__version__) < version.parse(minimumDicomwebClientVersion):
+        if not slicer.util.confirmOkCancelDisplay(f"DICOMweb browser requires installation of dicomweb-client (version {minimumDicomwebClientVersion} or later).\nClick OK to upgrade dicomweb-client and restart the application."):
           self.showBrowserOnEnter = False
           return
         needRestart = True
@@ -87,10 +88,12 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
       needInstall = True
 
     if needInstall:
-      # pythonweb-client 0.50 is currently broken (https://github.com/MGHComputationalPathology/dicomweb-client/issues/41)
-      # stick to 0.40 for now
-      slicer.util.pip_install('dicomweb-client<0.50')
+      # pythonweb-client 0.50 was broken (https://github.com/MGHComputationalPathology/dicomweb-client/issues/41)
+      progressDialog = slicer.util.createProgressDialog(labelText='Upgrading dicomweb-client. This may take a minute...', maximum=0)
+      slicer.app.processEvents()
+      slicer.util.pip_install(f'dicomweb-client>={minimumDicomwebClientVersion}')
       import dicomweb_client
+      progressDialog.close()
     if needRestart:
       slicer.util.restart()
 

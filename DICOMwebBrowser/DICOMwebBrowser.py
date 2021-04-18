@@ -504,6 +504,7 @@ Disable if data is added or removed from the database."""
     dicomweb_client.log.configure_logging(2)
     from dicomweb_client.api import DICOMwebClient
     effectiveServerUrl = self.serverUrl
+    session = None
     headers = {}
     # Setting up of the DICOMweb client from various server parameters can be done
     # in plugins in the future, but for now just hardcode special initialization
@@ -515,11 +516,16 @@ Disable if data is added or removed from the database."""
       # Kheops DICOMweb API endpoint from browser view URL
       url = qt.QUrl(self.serverUrl)
       if url.path().startswith('/view/'):
-        # This is a kheops viewer URL
+        # This is a Kheops viewer URL.
+        # Retrieve the token from the viewer URL and use the Kheops API URL to connect to the server.
         token = url.path().replace('/view/','')
-        effectiveServerUrl = f"https://token:{token}@demo.kheops.online/api"
+        effectiveServerUrl = "https://demo.kheops.online/api"
+        from requests.auth import HTTPBasicAuth
+        from dicomweb_client.session_utils import create_session_from_auth
+        auth = HTTPBasicAuth('token', token)
+        session = create_session_from_auth(auth)
 
-    self.DICOMwebClient = DICOMwebClient(url=effectiveServerUrl, headers=headers)
+    self.DICOMwebClient = DICOMwebClient(url=effectiveServerUrl, session=session, headers=headers)
 
     studiesList = None
     if os.path.isfile(cacheFile) and self.useCacheFlag:

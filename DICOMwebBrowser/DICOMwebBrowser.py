@@ -64,6 +64,11 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
       os.makedirs(self.cachePath)
     self.useCacheFlag = True
 
+    self.studyFilterUpdateTimer = qt.QTimer()
+    self.studyFilterUpdateTimer.setSingleShot(True)
+    self.studyFilterUpdateTimer.interval = 500
+    self.studyFilterUpdateTimer.connect('timeout()', self.updateStudyFilter)
+
   def enter(self):
     if self.showBrowserOnEnter:
       self.showBrowser()
@@ -217,7 +222,12 @@ Disable if data is added or removed from the database."""
     self.studiesSelectNoneButton.enabled = False
     self.studiesSelectNoneButton.setMaximumWidth(50)
     studiesSelectOptionsLayout.addWidget(self.studiesSelectNoneButton)
-    studiesSelectOptionsLayout.addStretch(1)
+    studiesFilterLabel = qt.QLabel('Filter:')
+    studiesSelectOptionsLayout.addWidget(studiesFilterLabel)
+    self.studiesFilter = ctk.ctkSearchBox()
+    self.studiesFilter.placeholderText = "Filter..."
+    self.studiesFilter.showSearchIcon = True
+    studiesSelectOptionsLayout.addWidget(self.studiesFilter)
     studiesVBoxLayout1.setSpacing(0)
     studiesVBoxLayout2.setSpacing(0)
     studiesVBoxLayout1.setMargin(0)
@@ -382,15 +392,15 @@ Disable if data is added or removed from the database."""
     self.seriesSelectNoneButton.connect('clicked(bool)', self.onSeriesSelectNoneButton)
     self.studiesSelectAllButton.connect('clicked(bool)', self.onStudiesSelectAllButton)
     self.studiesSelectNoneButton.connect('clicked(bool)', self.onStudiesSelectNoneButton)
+    self.studiesFilter.connect('textEdited(QString)', lambda: self.studyFilterUpdateTimer.start())
 
     # Add vertical spacer
     self.layout.addStretch(1)
 
     #self.connectToServer()
 
-
   def cleanup(self):
-    pass
+    self.studyFilterUpdateTimer.stop()
 
   def onShowBrowserButton(self):
     self.showBrowser()
@@ -626,6 +636,29 @@ Disable if data is added or removed from the database."""
     # self.loadButton.enabled = True
     # self.indexButton.enabled = True
 
+  def updateStudyFilter(self):
+    table = self.studiesTableWidget
+    tableColumns = self.studiesTableHeaderLabels
+    filterText = self.studiesFilter.text.upper()
+    rowCount = table.rowCount
+    for rowIndex in range(rowCount):
+      if filterText:
+        show = False
+        for columnName in tableColumns:
+          cellText = table.item(rowIndex, tableColumns.index(columnName)).text().upper()
+          if filterText in cellText:
+            show = True
+            break
+      else:
+        show = True
+      if show:
+        table.showRow(rowIndex)
+      else:
+        table.hideRow(rowIndex)
+        # We could consider remove seelction of hidden rows.
+
+    self.studiesTableWidget.resizeColumnsToContents()
+    self.studiesTableWidgetHeader.setStretchLastSection(True)
 
   def studiesTableSelectionChanged(self):
     self.clearSeriesTableWidget()

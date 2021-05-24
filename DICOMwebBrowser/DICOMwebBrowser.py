@@ -156,9 +156,13 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
     self.serverUrlLabel = qt.QLabel('Server URL:')
     serverFormLayout.addWidget(self.serverUrlLabel)
     # Server address selector
-    self.serverUrlLineEdit = qt.QLineEdit()
-    self.serverUrlLineEdit.text = qt.QSettings().value('DICOMwebBrowser/ServerURL', '')
-    self.serverUrlLineEdit.setMinimumWidth(200)
+    self.serverUrlLineEdit = qt.QComboBox()
+    self.serverUrlLineEdit.editable = True
+    qSize = qt.QSizePolicy()
+    qSize.setHorizontalPolicy(qt.QSizePolicy.Expanding)
+    qSize.setVerticalPolicy(qt.QSizePolicy.Preferred)
+    self.serverUrlLineEdit.setSizePolicy(qSize)
+    self.serverUrlLineEdit.currentText = qt.QSettings().value('DICOMwebBrowser/ServerURL', '')
     serverFormLayout.addWidget(self.serverUrlLineEdit)
 
     self.connectToServerButton = qt.QPushButton()
@@ -176,7 +180,6 @@ Disable if data is added or removed from the database."""
     serverFormLayout.addWidget(self.useCacheCeckBox)
     self.useCacheCeckBox.setCheckState(True)
     self.useCacheCeckBox.setTristate(False)
-    serverFormLayout.addStretch(4)
     #logoLabelText = "<img src='" + self.resourcePath('Icons/DICOMwebBrowser.png') + "'>"
     #self.logoLabel = qt.QLabel(logoLabelText)
     #serverFormLayout.addWidget(self.logoLabel)
@@ -496,15 +499,28 @@ Disable if data is added or removed from the database."""
   def onSeriesSelectNoneButton(self):
     self.seriesTableWidget.clearSelection()
 
+  def addServerUrlToHistory(self, url):
+    urlHistory = list(qt.QSettings().value('DICOMwebBrowser/ServerURLHistory', []))
+    # move the url to the first position
+    if url in urlHistory:
+      urlHistory.remove(url)
+    urlHistory.insert(0, url)
+    # keep the 10 most recent urls
+    urlHistory = urlHistory[:10]
+    qt.QSettings().setValue('DICOMwebBrowser/ServerURLHistory', urlHistory)
+    self.serverUrlLineEdit.clear()
+    self.serverUrlLineEdit.addItems(urlHistory)
+
   def connectToServer(self):
     # Save current server URL to application settings
-    qt.QSettings().setValue('DICOMwebBrowser/ServerURL', self.serverUrlLineEdit.text)
+    qt.QSettings().setValue('DICOMwebBrowser/ServerURL', self.serverUrlLineEdit.currentText)
+    self.addServerUrlToHistory(self.serverUrlLineEdit.currentText)
 
     self.loadButton.enabled = False
     self.indexButton.enabled = False
     self.clearStudiesTableWidget()
     self.clearSeriesTableWidget()
-    self.serverUrl = self.serverUrlLineEdit.text
+    self.serverUrl = self.serverUrlLineEdit.currentText
     import hashlib
     cacheFile = self.cachePath + hashlib.md5(self.serverUrl.encode()).hexdigest() + '.json'
     self.progressMessage = "Getting available studies for server: " + self.serverUrl
@@ -909,12 +925,13 @@ Disable if data is added or removed from the database."""
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Study date', '00080020')
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Study description', '00081030')
       rowIndex += 1
+
+    # Resize columns
     self.studiesTableWidget.resizeColumnsToContents()
     self.studiesTableWidgetHeader.setStretchLastSection(True)
     self.studiesTableRowCount = rowIndex
-    # # Resize columns
-    # self.studiesTableWidget.resizeColumnsToContents()
-    # self.studiesTableWidgetHeader.setStretchLastSection(True)
+
+    self.updateStudyFilter()
 
   def populateSeriesTableWidget(self, studyUID, series):
     # self.clearSeriesTableWidget()

@@ -412,16 +412,19 @@ Disable if data is added or removed from the database."""
     self.gcpSelectorDialog = GCPSelectorDialog()
     self.gcpSelectorDialog.connect("finished(int)", self.onGCPSelectorDialogFinished)
 
-  def onGCPSelectorDialogFinished(self):
+  def onGCPSelectorDialogFinished(self, result):
+    if result == qt.QDialog.Accepted:
+      url = "https://healthcare.googleapis.com/v1beta1"
+      url += f"/projects/{self.gcpSelectorDialog.project}"
+      url += f"/locations/{self.gcpSelectorDialog.location}"
+      url += f"/datasets/{self.gcpSelectorDialog.dataset}"
+      url += f"/dicomStores/{self.gcpSelectorDialog.dicomStore}"
+      url += "/dicomWeb"
 
-    url = "https://healthcare.googleapis.com/v1beta1"
-    url += f"/projects/{self.gcpSelectorDialog.project}"
-    url += f"/locations/{self.gcpSelectorDialog.location}"
-    url += f"/datasets/{self.gcpSelectorDialog.dataset}"
-    url += f"/dicomStores/{self.gcpSelectorDialog.dicomStore}"
-    url += "/dicomWeb"
-
-    qt.QSettings().setValue('DICOMwebBrowser/ServerURL', url)
+      qt.QSettings().setValue('DICOMwebBrowser/ServerURL', url)
+      logging.debug(f"Set server url to {url}")
+    else:
+      logging.debug(f"Server selection canceled")
 
   def onUseCacheStateChanged(self, state):
     if state == 0:
@@ -1049,24 +1052,27 @@ class GCPSelectorDialog(qt.QDialog):
 
 
   def onProjectSelected(self):
-    self.project = self.projectSelectorCombobox.currentText.split()[0]
-    self.datasetSelectorCombobox.clear()
-    self.dicomStoreSelectorCombobox.clear()
-    qt.QTimer.singleShot(0, lambda : self.datasetSelectorCombobox.addItems(self.gcp.datasets(self.project)))
+    currentText = self.projectSelectorCombobox.currentText
+    if currentText != "":
+      self.project = currentText.split()[0]
+      self.datasetSelectorCombobox.clear()
+      self.dicomStoreSelectorCombobox.clear()
+      qt.QTimer.singleShot(0, lambda : self.datasetSelectorCombobox.addItems(self.gcp.datasets(self.project)))
 
   def onDatasetSelected(self):
-    datasetTextList = self.datasetSelectorCombobox.currentText.split()
-    self.dataset = datasetTextList[0]
-    self.location = datasetTextList[1]
-    self.dicomStoreSelectorCombobox.clear()
-    qt.QTimer.singleShot(0, lambda : self.dicomStoreSelectorCombobox.addItems(self.gcp.dicomStores(self.project, self.dataset)))
+    currentText = self.datasetSelectorCombobox.currentText
+    if currentText != "":
+      datasetTextList = currentText.split()
+      self.dataset = datasetTextList[0]
+      self.location = datasetTextList[1]
+      self.dicomStoreSelectorCombobox.clear()
+      qt.QTimer.singleShot(0, lambda : self.dicomStoreSelectorCombobox.addItems(self.gcp.dicomStores(self.project, self.dataset)))
 
   def onDICOMStoreSelected(self):
     currentText = self.dicomStoreSelectorCombobox.currentText
     if currentText != "":
       self.dicomStore = currentText.split()[0]
       self.bbox.button(self.bbox.Ok).enabled = True
-
 
   def onOk(self):
     self.accept()
@@ -1083,11 +1089,11 @@ class GCPSelectorDialog(qt.QDialog):
 class GoogleCloudPlatform(object):
 
   def gcloud(self, subcommand):
-    process = qt.QProcess()
-    process.start("gcloud", subcommand.split())
-    process.waitForFinished()
-    result = process.readAllStandardOutput().data().decode()
-    return result
+    args = ['gcloud']
+    args.extend(subcommand.split())
+    process = slicer.util.launchConsoleProcess(args)
+    process.wait()
+    return process.stdout.read()
 
   def projects(self):
     return self.gcloud("projects list").split("\n")[1:]

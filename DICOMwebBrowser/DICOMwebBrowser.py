@@ -422,6 +422,7 @@ Disable if data is added or removed from the database."""
       url += "/dicomWeb"
 
       qt.QSettings().setValue('DICOMwebBrowser/ServerURL', url)
+      self.serverUrlLineEdit.currentText = qt.QSettings().value('DICOMwebBrowser/ServerURL', url)
       logging.debug(f"Set server url to {url}")
     else:
       logging.debug(f"Server selection canceled")
@@ -918,7 +919,7 @@ Disable if data is added or removed from the database."""
     rowIndex = self.studiesTableRowCount
     table.setRowCount(rowIndex + len(studies))
 
-    from dicomweb_client.api import load_json_dataset
+    # from dicomweb_client.api import load_json_dataset
     for study in studies:
       widget, value = self.setTableCellTextFromDICOM(table, self.studiesTableHeaderLabels, study, rowIndex, 'Study instance UID', '0020000D')
       self.studyInstanceUIDWidgets.append(widget)
@@ -946,9 +947,16 @@ Disable if data is added or removed from the database."""
     rowIndex = self.seriesTableRowCount
     table.setRowCount(rowIndex + len(series))
 
-    from dicomweb_client.api import load_json_dataset
+    # from dicomweb_client.api import load_json_dataset
+    import dicomweb_client 
+    from packaging import version 
     for serieJson in series:
-      serie = load_json_dataset(serieJson)
+      # serie = load_json_dataset(serieJson)
+      if (version.parse(dicomweb_client.__version__) < version.parse("0.54")):
+        from dicomweb_client.api import load_json_dataset
+        serie = load_json_dataset(serieJson)
+      else:
+        serie = pydicom.dataset.Dataset.from_json(serieJson)
       if hasattr(serie, 'SeriesInstanceUID'):
         widget, seriesInstanceUID = self.setTableCellTextFromDICOM(table, tableColumns, serie, rowIndex, 'Series Instance UID', 'SeriesInstanceUID')
         widget.setData(self.seriesItemSeriesInstanceUIDRole, serie.SeriesInstanceUID)
@@ -1089,20 +1097,25 @@ class GCPSelectorDialog(qt.QDialog):
 class GoogleCloudPlatform(object):
 
   def gcloud(self, subcommand):
-    args = ['gcloud']
+    # args = ['gcloud']
+    import shutil 
+    args = [shutil.which('gcloud')]
     args.extend(subcommand.split())
     process = slicer.util.launchConsoleProcess(args)
     process.wait()
     return process.stdout.read()
 
   def projects(self):
-    return self.gcloud("projects list").split("\n")[1:]
+    return self.gcloud("projects list --format=value(PROJECT_ID)").split("\n")[0:]
+    # return self.gcloud("projects list").split("\n")[1:]
 
   def datasets(self, project):
-    return self.gcloud(f"--project {project} healthcare datasets list").split("\n")[1:]
+    return self.gcloud(f"--project {project} healthcare datasets list --format=value(ID,LOCATION)").split("\n")[0:]
+    # return self.gcloud(f"--project {project} healthcare datasets list").split("\n")[1:]
 
   def dicomStores(self, project, dataset):
-    return self.gcloud(f"--project {project} healthcare dicom-stores list --dataset {dataset}").split("\n")[1:]
+    return self.gcloud(f"--project {project} healthcare dicom-stores list --dataset {dataset} --format=value(ID)").split("\n")[0:]
+    # return self.gcloud(f"--project {project} healthcare dicom-stores list --dataset {dataset}").split("\n")[1:]
 
   def token(self):
     return self.gcloud("auth print-access-token").strip()

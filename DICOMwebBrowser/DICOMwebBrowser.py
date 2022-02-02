@@ -1093,7 +1093,7 @@ class GoogleCloudPlatform(object):
   def gcloud(self, subcommand):
    
     import shutil 
-    args = shutil.which('gcloud')
+    args = [shutil.which('gcloud')]
     if (None in args):
       logging.error(f"Unable to locate gcloud, please install the Google Cloud SDK")
     args.extend(subcommand.split())

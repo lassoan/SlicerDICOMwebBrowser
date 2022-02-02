@@ -949,14 +949,8 @@ Disable if data is added or removed from the database."""
 
     
     import dicomweb_client 
-    from packaging import version 
     for serieJson in series:
-      
-      if (version.parse(dicomweb_client.__version__) < version.parse("0.54")):
-        from dicomweb_client.api import load_json_dataset
-        serie = load_json_dataset(serieJson)
-      else:
-        serie = pydicom.dataset.Dataset.from_json(serieJson)
+      serie = pydicom.dataset.Dataset.from_json(serieJson)
       if hasattr(serie, 'SeriesInstanceUID'):
         widget, seriesInstanceUID = self.setTableCellTextFromDICOM(table, tableColumns, serie, rowIndex, 'Series Instance UID', 'SeriesInstanceUID')
         widget.setData(self.seriesItemSeriesInstanceUIDRole, serie.SeriesInstanceUID)

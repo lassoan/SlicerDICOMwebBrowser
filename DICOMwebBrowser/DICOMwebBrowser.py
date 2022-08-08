@@ -79,7 +79,7 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
     # Ensure that correct version of dicomweb-clien Python package is installed
     needRestart = False
     needInstall = False
-    minimumDicomwebClientVersion = "0.51"
+    minimumDicomwebClientVersion = "0.56.2"
     try:
       import dicomweb_client
       from packaging import version
@@ -414,12 +414,13 @@ Disable if data is added or removed from the database."""
 
   def onGCPSelectorDialogFinished(self, result):
     if result == qt.QDialog.Accepted:
-      url = "https://healthcare.googleapis.com/v1beta1"
-      url += f"/projects/{self.gcpSelectorDialog.project}"
-      url += f"/locations/{self.gcpSelectorDialog.location}"
-      url += f"/datasets/{self.gcpSelectorDialog.dataset}"
-      url += f"/dicomStores/{self.gcpSelectorDialog.dicomStore}"
-      url += "/dicomWeb"
+      from dicomweb_client.ext.gcp.uri import GoogleCloudHealthcareURL
+      url = str(GoogleCloudHealthcareURL(
+          project_id=self.gcpSelectorDialog.project,
+          location=self.gcpSelectorDialog.location,
+          dataset_id=self.gcpSelectorDialog.dataset,
+          dicom_store_id=self.gcpSelectorDialog.dicomStore
+      ))
 
       qt.QSettings().setValue('DICOMwebBrowser/ServerURL', url)
       self.serverUrlLineEdit.currentText = qt.QSettings().value('DICOMwebBrowser/ServerURL', url)
@@ -573,19 +574,10 @@ Disable if data is added or removed from the database."""
     else:
       try:
         # Get all studies
-        studies = []
-        offset = 0
-
-        while True:
-            subset = self.DICOMwebClient.search_for_studies(offset=offset)
-            if len(subset) == 0:
-                break
-            if subset[0] in studies:
-                # got the same study twice, so probably this server does not respect offset,
-                # therefore we cannot do paging
-                break
-            studies.extend(subset)
-            offset += len(subset)
+        studies = self.DICOMwebClient.search_for_studies(
+          fields=["PatientName", "PatientID", "Modality", "StudyDescription", "StudyDate"],
+          get_remaining=True,
+        )
 
         # Save to cache
         with open(cacheFile, 'w') as f:
@@ -631,7 +623,11 @@ Disable if data is added or removed from the database."""
 
     else:
       try:
-        series = self.DICOMwebClient.search_for_series(self.selectedStudyInstanceUID)
+        series = self.DICOMwebClient.search_for_series(
+          self.selectedStudyInstanceUID,
+          fields=["SeriesNumber", "Modality", "NumberOfSeriesRelatedInstances", "SeriesDescription"],
+          get_remaining=True,
+        )
         # Save to cache
         with open(cacheFile, 'w') as f:
           json.dump(series, f)
@@ -800,7 +796,8 @@ Disable if data is added or removed from the database."""
         #response = self.DICOMwebClient.get_image(seriesInstanceUid=selectedSeries)
         instances = self.DICOMwebClient.search_for_instances(
           study_instance_uid=selectedStudy,
-          series_instance_uid=selectedSeries
+          series_instance_uid=selectedSeries,
+          get_remaining=True
           )
         self.progressMessage = "Retrieving data from server"
         logging.debug("Retrieving data from server")
@@ -919,13 +916,12 @@ Disable if data is added or removed from the database."""
     rowIndex = self.studiesTableRowCount
     table.setRowCount(rowIndex + len(studies))
 
-    
     for study in studies:
       widget, value = self.setTableCellTextFromDICOM(table, self.studiesTableHeaderLabels, study, rowIndex, 'Study instance UID', '0020000D')
       self.studyInstanceUIDWidgets.append(widget)
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Patient name', '00100010')
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Patient ID', '00100020')
-      self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Modality', '00080061')
+      self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Modality', '00080060')
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Study date', '00080020')
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Study description', '00081030')
       rowIndex += 1
@@ -947,8 +943,8 @@ Disable if data is added or removed from the database."""
     rowIndex = self.seriesTableRowCount
     table.setRowCount(rowIndex + len(series))
 
-    
-    import dicomweb_client 
+
+    import dicomweb_client
     for serieJson in series:
       serie = pydicom.dataset.Dataset.from_json(serieJson)
       if hasattr(serie, 'SeriesInstanceUID'):
@@ -1091,8 +1087,8 @@ class GCPSelectorDialog(qt.QDialog):
 class GoogleCloudPlatform(object):
 
   def gcloud(self, subcommand):
-   
-    import shutil 
+
+    import shutil
     args = [shutil.which('gcloud')]
     if (None in args):
       logging.error(f"Unable to locate gcloud, please install the Google Cloud SDK")

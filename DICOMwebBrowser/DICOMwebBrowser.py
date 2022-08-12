@@ -197,7 +197,7 @@ Disable if data is added or removed from the database."""
     self.studiesTableWidget = qt.QTableWidget()
     self.studiesTableWidget.setCornerButtonEnabled(True)
     self.studiesModel = qt.QStandardItemModel()
-    self.studiesTableHeaderLabels = ['Study instance UID', 'Patient name', 'Patient ID', 'Modality', 'Study date', 'Study description']
+    self.studiesTableHeaderLabels = ['Study instance UID', 'Patient name', 'Patient ID', 'Modalities', 'Study date', 'Study description']
     self.studiesTableWidget.setColumnCount(len(self.studiesTableHeaderLabels))
     self.studiesTableWidget.sortingEnabled = True
     self.studiesTableWidget.hideColumn(0)
@@ -925,7 +925,7 @@ Disable if data is added or removed from the database."""
       self.studyInstanceUIDWidgets.append(widget)
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Patient name', '00100010')
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Patient ID', '00100020')
-      self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Modality', '00080060')
+      self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Modalities', '00080061') # Modalities in Study
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Study date', '00080020')
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Study description', '00081030')
       rowIndex += 1

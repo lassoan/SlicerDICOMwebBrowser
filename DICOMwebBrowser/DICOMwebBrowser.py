@@ -197,7 +197,7 @@ Disable if data is added or removed from the database."""
     self.studiesTableWidget = qt.QTableWidget()
     self.studiesTableWidget.setCornerButtonEnabled(True)
     self.studiesModel = qt.QStandardItemModel()
-    self.studiesTableHeaderLabels = ['Study instance UID', 'Patient name', 'Patient ID', 'Modality', 'Study date', 'Study description']
+    self.studiesTableHeaderLabels = ['Study instance UID', 'Patient name', 'Patient ID', 'Modalities', 'Study date', 'Study description']
     self.studiesTableWidget.setColumnCount(len(self.studiesTableHeaderLabels))
     self.studiesTableWidget.sortingEnabled = True
     self.studiesTableWidget.hideColumn(0)
@@ -919,13 +919,13 @@ Disable if data is added or removed from the database."""
     rowIndex = self.studiesTableRowCount
     table.setRowCount(rowIndex + len(studies))
 
-    
+
     for study in studies:
       widget, value = self.setTableCellTextFromDICOM(table, self.studiesTableHeaderLabels, study, rowIndex, 'Study instance UID', '0020000D')
       self.studyInstanceUIDWidgets.append(widget)
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Patient name', '00100010')
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Patient ID', '00100020')
-      self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Modality', '00080061')
+      self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Modalities', '00080061') # Modalities in Study
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Study date', '00080020')
       self.setTableCellTextFromDICOM(table, tableColumns, study, rowIndex, 'Study description', '00081030')
       rowIndex += 1
@@ -947,8 +947,8 @@ Disable if data is added or removed from the database."""
     rowIndex = self.seriesTableRowCount
     table.setRowCount(rowIndex + len(series))
 
-    
-    import dicomweb_client 
+
+    import dicomweb_client
     for serieJson in series:
       serie = pydicom.dataset.Dataset.from_json(serieJson)
       if hasattr(serie, 'SeriesInstanceUID'):
@@ -1091,8 +1091,8 @@ class GCPSelectorDialog(qt.QDialog):
 class GoogleCloudPlatform(object):
 
   def gcloud(self, subcommand):
-   
-    import shutil 
+
+    import shutil
     args = [shutil.which('gcloud')]
     if (None in args):
       logging.error(f"Unable to locate gcloud, please install the Google Cloud SDK")

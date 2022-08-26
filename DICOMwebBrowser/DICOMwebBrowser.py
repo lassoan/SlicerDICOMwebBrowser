@@ -5,6 +5,7 @@ import logging
 import os
 import os.path
 import pydicom
+import shutil
 import string
 import sys
 import time
@@ -919,7 +920,7 @@ Disable if data is added or removed from the database."""
     rowIndex = self.studiesTableRowCount
     table.setRowCount(rowIndex + len(studies))
 
-    
+
     for study in studies:
       widget, value = self.setTableCellTextFromDICOM(table, self.studiesTableHeaderLabels, study, rowIndex, 'Study instance UID', '0020000D')
       self.studyInstanceUIDWidgets.append(widget)
@@ -947,8 +948,8 @@ Disable if data is added or removed from the database."""
     rowIndex = self.seriesTableRowCount
     table.setRowCount(rowIndex + len(series))
 
-    
-    import dicomweb_client 
+
+    import dicomweb_client
     for serieJson in series:
       serie = pydicom.dataset.Dataset.from_json(serieJson)
       if hasattr(serie, 'SeriesInstanceUID'):
@@ -1090,12 +1091,25 @@ class GCPSelectorDialog(qt.QDialog):
 
 class GoogleCloudPlatform(object):
 
+  def findgcloud(self):
+    gcloudPath = shutil.which('gcloud')
+    if gcloudPath:
+      return gcloudPath
+
+    if sys.platform in ("linux", "darwin"):
+      # Try a second way to find gcloud path
+        shell = os.environ.get("SHELL")
+        if shell:
+          process = slicer.util.launchConsoleProcess([shell, "-c", "which gcloud"])
+          process.wait()
+          gcloudPath = process.stdout.read().strip()
+          if os.path.exists(gcloudPath):
+            return gcloudPath
+
+    logging.error(f"Unable to locate gcloud, please install the Google Cloud SDK")
+
   def gcloud(self, subcommand):
-   
-    import shutil 
-    args = [shutil.which('gcloud')]
-    if (None in args):
-      logging.error(f"Unable to locate gcloud, please install the Google Cloud SDK")
+    args = [self.findgcloud()]
     args.extend(subcommand.split())
     process = slicer.util.launchConsoleProcess(args)
     process.wait()

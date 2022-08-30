@@ -5,6 +5,7 @@ import logging
 import os
 import os.path
 import pydicom
+import shutil
 import string
 import sys
 import time
@@ -1089,13 +1090,49 @@ class GCPSelectorDialog(qt.QDialog):
 
 
 class GoogleCloudPlatform(object):
+  gcloudPath=None
+
+  def __init__(self):
+    if not GoogleCloudPlatform.gcloudPath:
+      GoogleCloudPlatform.gcloudPath = self.findgcloud()
+
+  def findgcloud(self):
+    gcloudPath = shutil.which("gcloud")
+    if gcloudPath:
+      return gcloudPath
+
+    error_message = "Unable to locate gcloud, please install the Google Cloud SDK"
+    if sys.platform in ("linux", "darwin"):
+      # The default setup for gcloud modifies the PATH in bashrc (linux) or zshrc (macos)
+      # If slicer is launched via the desktop UI in macos or linux instead of a shell environment,
+      # then PATH variable is not modified to include the google cloud sdk path and shutil.which
+      # will be unable to locate gcloud. Instead launch the shell in a seperate process and run 'which gcloud'
+      shell = os.environ.get("SHELL","")
+      if shell:
+        # Search through all output lines and find one valid path to gcloud
+        # An interactive shell required to run .bashrc/.zshrc
+        # but an interactive shell may print out other text such as
+        # startup information from oh-my-zsh or other configurations the user setup.
+        process = slicer.util.launchConsoleProcess([shell, "-i", "-c", "which gcloud"])
+        process.wait()
+        for cmd_output in process.stdout.read().split('\n'):
+          gcloudPath = cmd_output.strip()
+          if gcloudPath.endswith('gcloud') and os.path.exists(gcloudPath):
+            return gcloudPath
+
+      error_message = error_message+ " and setup the PATH variable to the Google Cloud SDK bin directory in"
+      shell_name = shell.split('/')[-1]
+      if shell_name == "bash":
+        error_message = error_message+" ~/.bashrc"
+      elif shell_name == "zsh":
+        error_message = error_message+" ~/.zshrc"
+      else:
+        error_message = error_message+f" your {shell_name} config file"
+
+    raise RuntimeError(error_message)
 
   def gcloud(self, subcommand):
-
-    import shutil
-    args = [shutil.which('gcloud')]
-    if (None in args):
-      logging.error(f"Unable to locate gcloud, please install the Google Cloud SDK")
+    args = [GoogleCloudPlatform.gcloudPath]
     args.extend(subcommand.split())
     process = slicer.util.launchConsoleProcess(args)
     process.wait()

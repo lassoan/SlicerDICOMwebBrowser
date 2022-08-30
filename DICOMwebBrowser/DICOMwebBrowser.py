@@ -80,7 +80,7 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
     # Ensure that correct version of dicomweb-clien Python package is installed
     needRestart = False
     needInstall = False
-    minimumDicomwebClientVersion = "0.51"
+    minimumDicomwebClientVersion = "0.57"
     try:
       import dicomweb_client
       from packaging import version
@@ -416,12 +416,13 @@ Disable if data is added or removed from the database."""
   def onGCPSelectorDialogFinished(self, result):
     # see https://cloud.google.com/healthcare-api/docs/how-tos/dicomweb
     if result == qt.QDialog.Accepted:
-      url = "https://healthcare.googleapis.com/v1"
-      url += f"/projects/{self.gcpSelectorDialog.project}"
-      url += f"/locations/{self.gcpSelectorDialog.location}"
-      url += f"/datasets/{self.gcpSelectorDialog.dataset}"
-      url += f"/dicomStores/{self.gcpSelectorDialog.dicomStore}"
-      url += "/dicomWeb"
+      from dicomweb_client.ext.gcp.uri import GoogleCloudHealthcareURL
+      url = str(GoogleCloudHealthcareURL(
+          project_id=self.gcpSelectorDialog.project,
+          location=self.gcpSelectorDialog.location,
+          dataset_id=self.gcpSelectorDialog.dataset,
+          dicom_store_id=self.gcpSelectorDialog.dicomStore
+      ))
 
       qt.QSettings().setValue('DICOMwebBrowser/ServerURL', url)
       self.serverUrlLineEdit.currentText = qt.QSettings().value('DICOMwebBrowser/ServerURL', url)

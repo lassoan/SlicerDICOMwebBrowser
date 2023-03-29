@@ -414,8 +414,9 @@ Disable if data is added or removed from the database."""
     self.gcpSelectorDialog.connect("finished(int)", self.onGCPSelectorDialogFinished)
 
   def onGCPSelectorDialogFinished(self, result):
+    # see https://cloud.google.com/healthcare-api/docs/how-tos/dicomweb
     if result == qt.QDialog.Accepted:
-      url = "https://healthcare.googleapis.com/v1beta1"
+      url = "https://healthcare.googleapis.com/v1"
       url += f"/projects/{self.gcpSelectorDialog.project}"
       url += f"/locations/{self.gcpSelectorDialog.location}"
       url += f"/datasets/{self.gcpSelectorDialog.dataset}"

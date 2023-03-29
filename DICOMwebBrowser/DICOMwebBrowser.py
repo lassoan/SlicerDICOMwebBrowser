@@ -551,7 +551,7 @@ Disable if data is added or removed from the database."""
         # This is a Kheops viewer URL.
         # Retrieve the token from the viewer URL and use the Kheops API URL to connect to the server.
         token = url.path().replace('/view/','')
-        effectiveServerUrl = "https://demo.kheops.online/api"
+        effectiveServerUrl = f"{url.scheme()}://{url.host()}/api"
         from requests.auth import HTTPBasicAuth
         from dicomweb_client.session_utils import create_session_from_auth
         auth = HTTPBasicAuth('token', token)

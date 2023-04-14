@@ -77,7 +77,7 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
   def setup(self):
     ScriptedLoadableModuleWidget.setup(self)
 
-    # Ensure that correct version of dicomweb-clien Python package is installed
+    # Ensure that correct version of dicomweb-client Python package is installed
     needRestart = False
     needInstall = False
     minimumDicomwebClientVersion = "0.51"

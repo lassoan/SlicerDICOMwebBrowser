@@ -579,7 +579,7 @@ Disable if data is added or removed from the database."""
         offset = 0
 
         while True:
-            subset = self.DICOMwebClient.search_for_studies(offset=offset, fields=["StudyDescription"])
+            subset = self.DICOMwebClient.search_for_studies(offset=offset, fields=['StudyDescription'])
             if len(subset) == 0:
                 break
             if subset[0] in studies:
@@ -633,7 +633,7 @@ Disable if data is added or removed from the database."""
 
     else:
       try:
-        series = self.DICOMwebClient.search_for_series(self.selectedStudyInstanceUID)
+        series = self.DICOMwebClient.search_for_series(self.selectedStudyInstanceUID, fields=['SeriesNumber'])
         # Save to cache
         with open(cacheFile, 'w') as f:
           json.dump(series, f)

@@ -579,6 +579,7 @@ Disable if data is added or removed from the database."""
         offset = 0
 
         while True:
+            # request 'StudyDescription' for the UI because the qido-rs spec does not require it be returned
             subset = self.DICOMwebClient.search_for_studies(offset=offset, fields=['StudyDescription'])
             if len(subset) == 0:
                 break
@@ -633,6 +634,7 @@ Disable if data is added or removed from the database."""
 
     else:
       try:
+        # request 'SeriesNumber' for the UI because GCP does not return it by default
         series = self.DICOMwebClient.search_for_series(self.selectedStudyInstanceUID, fields=['SeriesNumber'])
         # Save to cache
         with open(cacheFile, 'w') as f:

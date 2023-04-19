@@ -15,6 +15,25 @@ from __main__ import vtk, qt, ctk, slicer
 
 from slicer.ScriptedLoadableModule import *
 
+def _get_all_pages(f, *args, **kwargs):
+  """get all data for DICOMwebClient methods that use offset to access paginaged data.
+  This function checks to duplicate data in case the server (ex. dcmjs) doesn't support paginated data
+  """
+  data = []
+  offset=0
+  while True:
+    kwargs['offset']=offset
+    subset = f(*args, **kwargs)
+    if len(subset) == 0:
+      break
+    if subset[0] in data:
+      # got the same data twice, so probably this server does not respect offset,
+      # therefore we cannot do paging
+      break
+    data.extend(subset)
+    offset += len(subset)
+  return data
+
 #
 # DICOMwebBrowser
 #
@@ -576,20 +595,8 @@ Disable if data is added or removed from the database."""
     else:
       try:
         # Get all studies
-        studies = []
-        offset = 0
-
-        while True:
-            # request 'StudyDescription' for the UI because the qido-rs spec does not require it be returned
-            subset = self.DICOMwebClient.search_for_studies(offset=offset, fields=['StudyDescription'])
-            if len(subset) == 0:
-                break
-            if subset[0] in studies:
-                # got the same study twice, so probably this server does not respect offset,
-                # therefore we cannot do paging
-                break
-            studies.extend(subset)
-            offset += len(subset)
+        # request 'StudyDescription' for the UI because the qido-rs spec does not require it be returned
+        studies = _get_all_pages(self.DICOMwebClient.search_for_studies, fields=['StudyDescription'])
 
         # Save to cache
         with open(cacheFile, 'w') as f:
@@ -636,7 +643,7 @@ Disable if data is added or removed from the database."""
     else:
       try:
         # request 'SeriesNumber' for the UI because GCP does not return it by default
-        series = self.DICOMwebClient.search_for_series(self.selectedStudyInstanceUID, fields=['SeriesNumber'])
+        series = _get_all_pages(self.DICOMwebClient.search_for_series, self.selectedStudyInstanceUID, fields=['SeriesNumber'])
         # Save to cache
         with open(cacheFile, 'w') as f:
           json.dump(series, f)
@@ -803,7 +810,7 @@ Disable if data is added or removed from the database."""
       logging.debug(self.progressMessage)
       try:
         #response = self.DICOMwebClient.get_image(seriesInstanceUid=selectedSeries)
-        instances = self.DICOMwebClient.search_for_instances(
+        instances = _get_all_pages(self.DICOMwebClient.search_for_instances,
           study_instance_uid=selectedStudy,
           series_instance_uid=selectedSeries
           )

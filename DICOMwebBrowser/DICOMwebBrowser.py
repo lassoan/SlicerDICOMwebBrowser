@@ -824,26 +824,24 @@ Disable if data is added or removed from the database."""
 
         instancesAlreadyInDatabase = slicer.dicomDatabase.instancesForSeries(selectedSeries)
 
-        for instanceIndex, instance in enumerate(instances):
+        retrievedInstances = self.DICOMwebClient.iter_series(
+              study_instance_uid=selectedStudy,
+              series_instance_uid=selectedSeries)
+
+        for instanceIndex, retrievedInstance in enumerate(retrievedInstances):
           if self.cancelDownloadRequested:
             break
           if currentDownloadProgressBar:
             currentDownloadProgressBar.setValue(instanceIndex)
           slicer.app.processEvents()
 
-          sopInstanceUid = instance['00080018']['Value'][0]
+          sopInstanceUid = retrievedInstance.SOPInstanceUID
           if sopInstanceUid in instancesAlreadyInDatabase:
             # instance is already in database
             continue
 
           fileName = downloadFolderPath + hashlib.md5(sopInstanceUid.encode()).hexdigest() + '.dcm'
           if not os.path.isfile(fileName) or not self.useCacheFlag:
-            # logging.debug("Downloading file {0} ({1}) from the DICOMweb server".format(
-            #   filename, sopInstanceUid)
-            retrievedInstance = self.DICOMwebClient.retrieve_instance(
-              study_instance_uid=selectedStudy,
-              series_instance_uid=selectedSeries,
-              sop_instance_uid=sopInstanceUid)
             pydicom.filewriter.write_file(fileName, retrievedInstance)
 
         self.clearStatus()

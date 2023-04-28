@@ -18,6 +18,8 @@ from slicer.ScriptedLoadableModule import *
 def _get_all_pages(f, *args, **kwargs):
   """get all data for DICOMwebClient methods that use offset to access paginaged data.
   This function checks to duplicate data in case the server (ex. dcmjs) doesn't support paginated data
+  Once the issue is fixed in dcmjs, https://github.com/dcmjs-org/dicomweb-server/issues/19, than this
+  function can be removed and replaced with the `get_remaining` param in the DICOMwebClient.search_for* methods
   """
   data = []
   offset=0

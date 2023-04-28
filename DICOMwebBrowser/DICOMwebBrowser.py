@@ -77,7 +77,7 @@ class DICOMwebBrowserWidget(ScriptedLoadableModuleWidget):
   def setup(self):
     ScriptedLoadableModuleWidget.setup(self)
 
-    # Ensure that correct version of dicomweb-clien Python package is installed
+    # Ensure that correct version of dicomweb-client Python package is installed
     needRestart = False
     needInstall = False
     minimumDicomwebClientVersion = "0.57"
@@ -580,7 +580,8 @@ Disable if data is added or removed from the database."""
         offset = 0
 
         while True:
-            subset = self.DICOMwebClient.search_for_studies(offset=offset)
+            # request 'StudyDescription' for the UI because the qido-rs spec does not require it be returned
+            subset = self.DICOMwebClient.search_for_studies(offset=offset, fields=['StudyDescription'])
             if len(subset) == 0:
                 break
             if subset[0] in studies:
@@ -634,7 +635,8 @@ Disable if data is added or removed from the database."""
 
     else:
       try:
-        series = self.DICOMwebClient.search_for_series(self.selectedStudyInstanceUID)
+        # request 'SeriesNumber' for the UI because GCP does not return it by default
+        series = self.DICOMwebClient.search_for_series(self.selectedStudyInstanceUID, fields=['SeriesNumber'])
         # Save to cache
         with open(cacheFile, 'w') as f:
           json.dump(series, f)

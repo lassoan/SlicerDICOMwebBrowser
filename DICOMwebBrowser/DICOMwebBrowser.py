@@ -825,7 +825,7 @@ Disable if data is added or removed from the database."""
         instancesAlreadyInDatabase = slicer.dicomDatabase.instancesForSeries(selectedSeries)
         if instancesAlreadyInDatabase:
           def instanceGen():
-            # generater that will request and download missing instances one at a time
+            # generator that will request and download missing instances one at a time
             # this is useful if the user has a partially downloaded series
             seriesSOPInstanceUIDs = {instance['00080018']['Value'][0] for instance in instances}
             missingSOPInstanceUIDs = list(seriesSOPInstanceUIDs - set(instancesAlreadyInDatabase))

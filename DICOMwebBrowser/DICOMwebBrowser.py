@@ -823,12 +823,27 @@ Disable if data is added or removed from the database."""
         self.seriesTableWidget.scrollToItem(self.seriesTableWidget.item(rowIndex, self.seriesTableHeaderLabels.index('Status')))
 
         instancesAlreadyInDatabase = slicer.dicomDatabase.instancesForSeries(selectedSeries)
+        if instancesAlreadyInDatabase:
+          def instanceGen():
+            # generater that will request and download missing instances one at a time
+            # this is useful if the user has a partially downloaded series
+            seriesSOPInstanceUIDs = {instance['00080018']['Value'][0] for instance in instances}
+            missingSOPInstanceUIDs = list(seriesSOPInstanceUIDs - set(instancesAlreadyInDatabase))
+            for sopInstanceUid in missingSOPInstanceUIDs:
+              yield self.DICOMwebClient.retrieve_instance(
+                study_instance_uid=selectedStudy,
+                series_instance_uid=selectedSeries,
+                sop_instance_uid=sopInstanceUid)
+          retrievedInstances = instanceGen()
+        else:
+          # series not found in database, download everything
+          # iter_series makes a single streaming connection, which is significantly faster
+          # than downloading one instance per request with retrieve_instance
+          retrievedInstances = self.DICOMwebClient.iter_series(
+                study_instance_uid=selectedStudy,
+                series_instance_uid=selectedSeries)
 
-        retrievedInstances = self.DICOMwebClient.iter_series(
-              study_instance_uid=selectedStudy,
-              series_instance_uid=selectedSeries)
-
-        for instanceIndex, retrievedInstance in enumerate(retrievedInstances):
+        for instanceIndex, retrievedInstance in enumerate(retrievedInstances, start=len(instancesAlreadyInDatabase)):
           if self.cancelDownloadRequested:
             break
           if currentDownloadProgressBar:
@@ -836,10 +851,6 @@ Disable if data is added or removed from the database."""
           slicer.app.processEvents()
 
           sopInstanceUid = retrievedInstance.SOPInstanceUID
-          if sopInstanceUid in instancesAlreadyInDatabase:
-            # instance is already in database
-            continue
-
           fileName = downloadFolderPath + hashlib.md5(sopInstanceUid.encode()).hexdigest() + '.dcm'
           if not os.path.isfile(fileName) or not self.useCacheFlag:
             pydicom.filewriter.write_file(fileName, retrievedInstance)

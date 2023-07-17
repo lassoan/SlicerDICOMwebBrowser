@@ -23,7 +23,11 @@ def _get_all_pages(f, *args, **kwargs):
   offset=0
   while True:
     kwargs['offset']=offset
-    subset = f(*args, **kwargs)
+    try:
+      subset = f(*args, **kwargs)
+    except:
+      # Kheops may return 500 error if the offset is too large
+      subset = []
     if len(subset) == 0:
       break
     if subset[0] in data:
